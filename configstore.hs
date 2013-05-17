@@ -11,8 +11,9 @@ type JSON = Aeson.Value
 type Comment = Text
 type Author = Text
 type ChangeSet = ()
+type Timestamp = ()
 
-data MetaInfo = MetaInfo Comment Author ChangeSet
+data MetaInfo = MetaInfo Timestamp Comment Author ChangeSet
 
 data Tag =
   JSONTag |
@@ -59,5 +60,23 @@ updateHead prev next = singleton $ UpdateHead prev next
 runStoreOp :: StoreOp a -> IO a
 runStoreOp = undefined
 
+-- This is a little tricky, if you're having difficulty understanding, read up 
+-- on fixed point combinators and fixed point types.
+
+-- Essentially, what's going on here is that a tree is being defined by taking 
+-- the fixed point of (m :: * -> *). Except that, at every recursion site, 
+-- there might be a reference instead of a subtree.
+newtype Mu t m = Mu (Either t (m (Mu t m)))
+
+-- These are data types that may have pieces that aren't in local memory.
+type JSON' = Either (Ref JSONTag) JSON
+type Hierarchy = Mu (Ref HierarchyTag) (TreeNode JSON' Text)
+type History = Mu (Ref HistoryTag) (ListNode (MetaInfo, Hierarchy))
+
+-- These types specify data structures with holes.
+data HistoryCtx = HistoryCtx History [(MetaInfo, Hierarchy)]
+data HierarchyCtx = HierarchyCtx [([Hierarchy], [Hierarchy], JSON')]
+
+data Zipper = Zipper HistoryCtx MetaInfo HierarchyCtx Hierarchy
 
 main = print "hello world"
