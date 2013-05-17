@@ -5,4 +5,4 @@ cabal-version:       >=1.8
 
 executable configstore
   main-is:             configstore.hs
-  build-depends:       base ==4.6.*
+  build-depends:       base ==4.6.*, operational, bytestring, text, aeson
