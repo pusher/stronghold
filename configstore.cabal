@@ -1,0 +1,8 @@
+name:                configstore
+version:             0.1
+build-type:          Simple
+cabal-version:       >=1.8
+
+executable configstore
+  main-is:             configstore.hs
+  build-depends:       base ==4.6.*
