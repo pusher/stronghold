@@ -111,9 +111,51 @@ derefHierarchy (Mu (Left r)) = do
 
 -- These types specify data structures with holes.
 data HistoryCtx = HistoryCtx History [(MetaInfo, Hierarchy)]
-data HierarchyCtx = HierarchyCtx [([Hierarchy], [Hierarchy], JSON')]
+data HierarchyCtx = HierarchyCtx [(Text, [(Text, Hierarchy)], JSON')]
 
-data Zipper = Zipper HistoryCtx MetaInfo HierarchyCtx Hierarchy
+data Zipper = Zipper HistoryCtx MetaInfo HierarchyCtx (TreeNode JSON' Text Hierarchy)
+
+delete :: Eq k => k -> [(k, v)] -> [(k, v)]
+delete _ [] = []
+delete k1 ((k2, v):xs) =
+  if k1 == k2 then
+    xs
+  else
+    delete k1 xs
+
+down :: Text -> Zipper -> StoreOp Zipper
+down key (Zipper histCtx meta (HierarchyCtx hierCtx) (TreeNode children json)) =
+  let hierCtx' = HierarchyCtx ((key, delete key children, json):hierCtx)
+      def = return $ TreeNode [] (refJSON (Aeson.object [])) in
+        Zipper histCtx meta hierCtx' <$> maybe def derefHierarchy (lookup key children)
+
+up :: Zipper -> Zipper
+up (Zipper histCtx meta (HierarchyCtx []) hier) =
+  Zipper histCtx meta (HierarchyCtx []) hier
+up (Zipper histCtx meta (HierarchyCtx ((key, children, json):xs)) hier) =
+  Zipper histCtx meta (HierarchyCtx xs) (TreeNode ((key, refHierarchy hier):children) json)
+
+isTop :: Zipper -> Bool
+isTop (Zipper _ _ (HierarchyCtx x) _ ) = null x
+
+top :: Zipper -> Zipper
+top z =
+  if isTop z then
+    z
+  else
+    top (up z)
+
+getJSON' :: Zipper -> JSON'
+getJSON' (Zipper _ _ _ (TreeNode _ json)) = json
+
+getJSON :: Zipper -> StoreOp (Zipper, JSON)
+getJSON (Zipper histCtx meta hierCtx (TreeNode children json')) = do
+  json <- derefJSON json'
+  return (Zipper histCtx meta hierCtx (TreeNode children (refJSON json)), json)
+
+setJSON' :: JSON' -> Zipper -> Zipper
+setJSON' json' (Zipper histCtx meta hierCtx (TreeNode children _)) =
+  Zipper histCtx meta hierCtx (TreeNode children json')
 
 site :: Snap ()
 site =
