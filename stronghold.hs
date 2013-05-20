@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, EmptyDataDecls, DataKinds, KindSignatures, OverloadedStrings, FlexibleInstances  #-}
+{-# LANGUAGE GADTs, EmptyDataDecls, DataKinds, KindSignatures, OverloadedStrings, ScopedTypeVariables #-}
 module Main where
 
 import Data.ByteString (ByteString)
@@ -28,6 +28,23 @@ data Tag =
   HierarchyTag |
   HistoryTag
 
+data STag :: Tag -> * where
+  JSONTag' :: STag JSONTag
+  HierarchyTag' :: STag HierarchyTag
+  HistoryTag' :: STag HistoryTag
+
+class TagClass t where
+  tag :: STag t
+
+instance TagClass JSONTag where
+  tag = JSONTag'
+
+instance TagClass HierarchyTag where
+  tag = HierarchyTag'
+
+instance TagClass HistoryTag where
+  tag = HistoryTag'
+
 data TreeNode x k v = TreeNode [(k, v)] x
 data ListNode x r = Nil | Cons x r
 
@@ -35,6 +52,13 @@ data Data :: Tag -> * where
   JSONData :: JSON -> Data JSONTag
   HierarchyNode :: TreeNode (Ref JSONTag) Text (Ref HierarchyTag) -> Data HierarchyTag
   HistoryNode :: ListNode (MetaInfo, Ref HierarchyTag) (Ref HistoryTag) -> Data HistoryTag
+
+type JSONData = Data JSONTag
+type HierarchyNode = Data HierarchyTag
+type HistoryNode = Data HistoryTag
+
+data Ref :: Tag -> * where
+  Ref :: ByteString -> Ref t
 
 instance Serialize Aeson.Value where
   put = put . Aeson.encode
@@ -72,56 +96,46 @@ instance Serialize MetaInfo where
   put _ = return ()
   get = return $ MetaInfo () "" "" ()
 
-instance Serialize (Data JSONTag) where
+instance TagClass t => Serialize (Data t) where
   put (JSONData json) = do
     putByteString "1"
     put json
-  get = do
-    t <- getBytes 1
-    when (t /= "1") $ fail "expected json tag"
-    JSONData <$> get
-
-instance Serialize (Data HierarchyTag) where
   put (HierarchyNode x) = do
     putByteString "2"
     put x
-  get = do
-    t <- getBytes 1
-    when (t /= "2") $ fail "expected hierarchy node tag"
-    HierarchyNode <$> get
-
-instance Serialize (Data HistoryTag) where
   put (HistoryNode x) = do
     putByteString "3"
     put x
+
   get = do
     t <- getBytes 1
-    when (t /= "3") $ fail "expected history node tag"
-    HistoryNode <$> get
-
-type JSONData = Data JSONTag
-type HierarchyNode = Data HierarchyTag
-type HistoryNode = Data HistoryTag
-
-data Ref :: Tag -> * where
-  Ref :: ByteString -> Ref a
+    case (tag :: STag t) of
+      JSONTag' -> do
+        when (t /= "1") $ fail "expected json tag"
+        JSONData <$> get
+      HierarchyTag' -> do
+        when (t /= "2") $ fail "expected hierarchy node tag"
+        HierarchyNode <$> get
+      HistoryTag' -> do
+        when (t /= "3") $ fail "expected history node tag"
+        HistoryNode <$> get
 
 emptyObject :: Ref JSONTag -> Bool
 emptyObject = undefined
 
 -- This defines the operations that are possible on the data in zookeeper
 data StoreInstr a where
-  Store :: Data t -> StoreInstr (Ref t)
-  Load :: Ref t -> StoreInstr (Data t)
+  Store :: TagClass t => Data t -> StoreInstr (Ref t)
+  Load :: TagClass t => Ref t -> StoreInstr (Data t)
   GetHead :: StoreInstr (Ref HistoryTag)
   UpdateHead :: Ref HistoryTag -> Ref HistoryTag -> StoreInstr Bool
 
 type StoreOp a = Program StoreInstr a
 
-store :: Data x -> StoreOp (Ref x)
+store :: TagClass x => Data x -> StoreOp (Ref x)
 store = singleton . Store
 
-load :: Ref x -> StoreOp (Data x)
+load :: TagClass x => Ref x -> StoreOp (Data x)
 load = singleton . Load
 
 getHead :: StoreOp (Ref HistoryTag)
