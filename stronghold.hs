@@ -82,6 +82,25 @@ type JSON' = Either (Ref JSONTag) JSON
 type Hierarchy = Mu (Ref HierarchyTag) (TreeNode JSON' Text)
 type History = Mu (Ref HistoryTag) (ListNode (MetaInfo, Hierarchy))
 
+storeJSON :: JSON' -> StoreOp (Ref JSONTag)
+storeJSON (Left x) = return x
+storeJSON (Right x) = put $ JSONData x
+
+storeHierarchy :: Hierarchy -> StoreOp (Ref HierarchyTag)
+storeHierarchy (Mu (Left x)) = return x
+storeHierarchy (Mu (Right (TreeNode l json))) = do
+  json' <- storeJSON json
+  l' <- mapM (\(k, v) -> (,) k <$> storeHierarchy v) l
+  put $ HierarchyNode (TreeNode l' json')
+
+storeHistory :: History -> StoreOp (Ref HistoryTag)
+storeHistory (Mu (Left x)) = return x
+storeHistory (Mu (Right Nil)) = put $ HistoryNode Nil
+storeHistory (Mu (Right (Cons (meta, hier) xs))) = do
+  xs' <- storeHistory xs
+  hier' <- storeHierarchy hier
+  put $ HistoryNode $ Cons (meta, hier') xs'
+
 emptyObject' :: JSON' -> Bool
 emptyObject' (Left x) = emptyObject x
 emptyObject' (Right x) = Aeson.object [] == x
