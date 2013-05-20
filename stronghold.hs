@@ -46,18 +46,18 @@ emptyObject = undefined
 
 -- This defines the operations that are possible on the data in zookeeper
 data StoreInstr a where
-  Put :: Data t -> StoreInstr (Ref t)
-  Get :: Ref t -> StoreInstr (Data t)
+  Store :: Data t -> StoreInstr (Ref t)
+  Load :: Ref t -> StoreInstr (Data t)
   GetHead :: StoreInstr (Ref HistoryTag)
   UpdateHead :: Ref HistoryTag -> Ref HistoryTag -> StoreInstr Bool
 
 type StoreOp a = Program StoreInstr a
 
-put :: Data x -> StoreOp (Ref x)
-put = singleton . Put
+store :: Data x -> StoreOp (Ref x)
+store = singleton . Store
 
-get :: Ref x -> StoreOp (Data x)
-get = singleton . Get
+load :: Ref x -> StoreOp (Data x)
+load = singleton . Load
 
 getHead :: StoreOp (Ref HistoryTag)
 getHead = singleton GetHead
@@ -84,22 +84,22 @@ type History = Mu (Ref HistoryTag) (ListNode (MetaInfo, Hierarchy))
 
 storeJSON :: JSON' -> StoreOp (Ref JSONTag)
 storeJSON (Left x) = return x
-storeJSON (Right x) = put $ JSONData x
+storeJSON (Right x) = store $ JSONData x
 
 storeHierarchy :: Hierarchy -> StoreOp (Ref HierarchyTag)
 storeHierarchy (Mu (Left x)) = return x
 storeHierarchy (Mu (Right (TreeNode l json))) = do
   json' <- storeJSON json
   l' <- mapM (\(k, v) -> (,) k <$> storeHierarchy v) l
-  put $ HierarchyNode (TreeNode l' json')
+  store $ HierarchyNode (TreeNode l' json')
 
 storeHistory :: History -> StoreOp (Ref HistoryTag)
 storeHistory (Mu (Left x)) = return x
-storeHistory (Mu (Right Nil)) = put $ HistoryNode Nil
+storeHistory (Mu (Right Nil)) = store $ HistoryNode Nil
 storeHistory (Mu (Right (Cons (meta, hier) xs))) = do
   xs' <- storeHistory xs
   hier' <- storeHierarchy hier
-  put $ HistoryNode $ Cons (meta, hier') xs'
+  store $ HistoryNode $ Cons (meta, hier') xs'
 
 emptyObject' :: JSON' -> Bool
 emptyObject' (Left x) = emptyObject x
@@ -111,7 +111,7 @@ refJSON = Right
 derefJSON :: JSON' -> StoreOp JSON
 derefJSON (Right x) = return x
 derefJSON (Left r) = do
-  JSONData d <- get r
+  JSONData d <- load r
   return d
 
 refHistory :: ListNode (MetaInfo, Hierarchy) History -> History
@@ -120,7 +120,7 @@ refHistory = Mu . Right
 derefHistory :: History -> StoreOp (ListNode (MetaInfo, Hierarchy) History)
 derefHistory (Mu (Right x)) = return x
 derefHistory (Mu (Left r)) = do
-  HistoryNode l <- get r
+  HistoryNode l <- load r
   return $
     case l of
       Nil -> Nil
@@ -132,7 +132,7 @@ refHierarchy = Mu . Right
 derefHierarchy :: Hierarchy -> StoreOp (TreeNode JSON' Text Hierarchy)
 derefHierarchy (Mu (Right x)) = return x
 derefHierarchy (Mu (Left r)) = do
-  HierarchyNode (TreeNode l json) <- get r
+  HierarchyNode (TreeNode l json) <- load r
   return $ TreeNode (map (\(k, v) -> (k, Mu (Left v))) l) (Left json)
 
 data HierarchyCtx = HierarchyCtx [(Text, [(Text, Hierarchy)], JSON')]
@@ -171,11 +171,11 @@ top z =
   else
     top (up z)
 
-getJSON' :: HierarchyZipper -> JSON'
-getJSON' (HierarchyZipper _ (TreeNode _ json)) = json
+loadJSON' :: HierarchyZipper -> JSON'
+loadJSON' (HierarchyZipper _ (TreeNode _ json)) = json
 
-getJSON :: HierarchyZipper -> StoreOp (HierarchyZipper, JSON)
-getJSON (HierarchyZipper hierCtx (TreeNode children json')) = do
+loadJSON :: HierarchyZipper -> StoreOp (HierarchyZipper, JSON)
+loadJSON (HierarchyZipper hierCtx (TreeNode children json')) = do
   json <- derefJSON json'
   return (HierarchyZipper hierCtx (TreeNode children (refJSON json)), json)
 
@@ -219,15 +219,15 @@ forwardMost z =
   else
     forwardMost (forward z)
 
-getMetaInfo :: HistoryZipper -> MetaInfo
-getMetaInfo (HistoryZipper _ meta _) = meta
+loadMetaInfo :: HistoryZipper -> MetaInfo
+loadMetaInfo (HistoryZipper _ meta _) = meta
 
 setMetaInfo :: MetaInfo -> HistoryZipper -> HistoryZipper
 setMetaInfo meta (HistoryZipper histCtx _ hier) =
   HistoryZipper histCtx meta hier
 
-getHierarchy :: HistoryZipper -> Hierarchy
-getHierarchy (HistoryZipper _ _ hier) = hier
+loadHierarchy :: HistoryZipper -> Hierarchy
+loadHierarchy (HistoryZipper _ _ hier) = hier
 
 append :: MetaInfo -> Hierarchy -> HistoryZipper -> HistoryZipper
 append = undefined
