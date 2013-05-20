@@ -167,6 +167,11 @@ setJSON' json' (HierarchyZipper hierCtx (TreeNode children _)) =
 children :: HierarchyZipper -> [Text]
 children (HierarchyZipper _ (TreeNode children _)) = map fst children
 
+solidifyHierarchy :: HierarchyZipper -> Hierarchy
+solidifyHierarchy hier =
+  let HierarchyZipper _ hier' = top hier in
+    refHierarchy hier'
+
 data HistoryCtx = HistoryCtx History [(MetaInfo, Hierarchy)]
 data HistoryZipper = HistoryZipper HistoryCtx MetaInfo Hierarchy
 
@@ -185,6 +190,16 @@ forward z@(HistoryZipper (HistoryCtx l r) meta hier) = do
     ((meta', hier'):xs) ->
       HistoryZipper (HistoryCtx (refHistory (Cons (meta, hier) l)) xs) meta' hier'
 
+isForwardMost :: HistoryZipper -> Bool
+isForwardMost (HistoryZipper (HistoryCtx _ x) _ _) = null x
+
+forwardMost :: HistoryZipper -> HistoryZipper
+forwardMost z =
+  if isForwardMost z then
+    z
+  else
+    forwardMost (forward z)
+
 getMetaInfo :: HistoryZipper -> MetaInfo
 getMetaInfo (HistoryZipper _ meta _) = meta
 
@@ -197,6 +212,11 @@ getHierarchy (HistoryZipper _ _ hier) = hier
 
 append :: MetaInfo -> Hierarchy -> HistoryZipper -> HistoryZipper
 append = undefined
+
+solidifyHistory :: HistoryZipper -> History
+solidifyHistory z =
+  let (HistoryZipper (HistoryCtx l _) meta hier) = forwardMost z in
+    refHistory (Cons (meta, hier) l)
 
 site :: Snap ()
 site =
