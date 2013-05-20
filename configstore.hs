@@ -110,7 +110,7 @@ derefHierarchy (Mu (Left r)) = do
   return $ TreeNode (map (\(k, v) -> (k, Mu (Left v))) l) (Left json)
 
 -- These types specify data structures with holes.
-data HistoryCtx = HistoryCtx History [(MetaInfo, Hierarchy)]
+data HistoryCtx = HistoryCtx History [(MetaInfo, TreeNode JSON' Text Hierarchy)]
 data HierarchyCtx = HierarchyCtx [(Text, [(Text, Hierarchy)], JSON')]
 
 data Zipper = Zipper HistoryCtx MetaInfo HierarchyCtx (TreeNode JSON' Text Hierarchy)
@@ -129,21 +129,31 @@ down key (Zipper histCtx meta (HierarchyCtx hierCtx) (TreeNode children json)) =
       def = return $ TreeNode [] (refJSON (Aeson.object [])) in
         Zipper histCtx meta hierCtx' <$> maybe def derefHierarchy (lookup key children)
 
-up :: Zipper -> Zipper
+up :: Zipper -> StoreOp Zipper
 up (Zipper histCtx meta (HierarchyCtx []) hier) =
-  Zipper histCtx meta (HierarchyCtx []) hier
-up (Zipper histCtx meta (HierarchyCtx ((key, children, json):xs)) hier) =
-  Zipper histCtx meta (HierarchyCtx xs) (TreeNode ((key, refHierarchy hier):children) json)
+  return $ Zipper histCtx meta (HierarchyCtx []) hier
+up (Zipper histCtx meta (HierarchyCtx ((key, children', json'):xs)) hier@(TreeNode children json)) =
+  if null children then do
+    json'' <- derefJSON json
+    if json'' == Aeson.object [] then
+      return $ Zipper histCtx meta (HierarchyCtx xs) (TreeNode children' json')
+     else
+      construct (refJSON json'')
+  else
+    construct json
+ where
+  construct json' =
+    return $ Zipper histCtx meta (HierarchyCtx xs) (TreeNode ((key, refHierarchy hier):children) json')
 
 isTop :: Zipper -> Bool
 isTop (Zipper _ _ (HierarchyCtx x) _ ) = null x
 
-top :: Zipper -> Zipper
+top :: Zipper -> StoreOp Zipper
 top z =
   if isTop z then
-    z
+    return z
   else
-    top (up z)
+    up z >>= top
 
 getJSON' :: Zipper -> JSON'
 getJSON' (Zipper _ _ _ (TreeNode _ json)) = json
@@ -156,6 +166,34 @@ getJSON (Zipper histCtx meta hierCtx (TreeNode children json')) = do
 setJSON' :: JSON' -> Zipper -> Zipper
 setJSON' json' (Zipper histCtx meta hierCtx (TreeNode children _)) =
   Zipper histCtx meta hierCtx (TreeNode children json')
+
+children :: Zipper -> [Text]
+children (Zipper _ _ _ (TreeNode children _)) = map fst children
+
+left :: Zipper -> StoreOp Zipper
+left z = do
+  Zipper (HistoryCtx l r) meta hierCtx hier <- top z
+  l' <- derefHistory l
+  case l' of
+    Nil -> return $ Zipper (HistoryCtx (refHistory l') r) meta hierCtx hier
+    Cons (meta', hier') xs -> do
+      hier'' <- derefHierarchy hier'
+      return $ Zipper (HistoryCtx xs ((meta, hier):r)) meta' (HierarchyCtx []) hier''
+
+right :: Zipper -> StoreOp Zipper
+right z = do
+  z'@(Zipper (HistoryCtx l r) meta hierCtx hier) <- top z
+  case r of
+    [] -> return z'
+    ((meta', hier'):xs) ->
+      return $ Zipper (HistoryCtx (refHistory (Cons (meta, refHierarchy hier) l)) xs) meta' (HierarchyCtx []) hier'
+
+getMetaInfo :: Zipper -> MetaInfo
+getMetaInfo (Zipper _ meta _ _) = meta
+
+setMetaInfo :: MetaInfo -> Zipper -> Zipper
+setMetaInfo meta (Zipper histCtx _ hierCtx hier) =
+  Zipper histCtx meta hierCtx hier
 
 site :: Snap ()
 site =
@@ -173,4 +211,3 @@ echoHandler = do
 
 main :: IO ()
 main = quickHttpServe site
-
