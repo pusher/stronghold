@@ -1,11 +1,13 @@
-{-# LANGUAGE GADTs, EmptyDataDecls, DataKinds, KindSignatures, OverloadedStrings #-}
+{-# LANGUAGE GADTs, EmptyDataDecls, DataKinds, KindSignatures, OverloadedStrings, FlexibleInstances  #-}
 module Main where
 
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import qualified Data.Aeson as Aeson
+import Data.Serialize
 
 import Control.Applicative
+import Control.Monad
 import Control.Monad.Operational
 
 import Snap.Core
@@ -33,6 +35,69 @@ data Data :: Tag -> * where
   JSONData :: JSON -> Data JSONTag
   HierarchyNode :: TreeNode (Ref JSONTag) Text (Ref HierarchyTag) -> Data HierarchyTag
   HistoryNode :: ListNode (MetaInfo, Ref HierarchyTag) (Ref HistoryTag) -> Data HistoryTag
+
+instance Serialize Aeson.Value where
+  put = put . Aeson.encode
+  get = maybe (fail "error parsing json") return =<< Aeson.decode <$> get
+
+instance Serialize (Ref t) where
+  put (Ref x) = put x
+  get = Ref <$> get
+
+instance (Serialize k, Serialize v, Serialize x) => Serialize (TreeNode x k v) where
+  put (TreeNode l x) = put (l, x)
+  get = (\(l, x) -> TreeNode l x) <$> get
+
+instance Serialize Text where
+  put = undefined
+  get = undefined
+
+instance (Serialize x, Serialize r) => Serialize (ListNode x r) where
+  put Nil = putByteString "n"
+  put (Cons x xs) = do
+    putByteString "c"
+    put (x, xs)
+
+  get = do
+    b <- getBytes 1
+    if b == "n" then
+      return Nil
+     else if b == "c" then
+      (\(x, xs) -> Cons x xs) <$> get
+     else
+      fail "unknown listnode type"
+
+-- FIXME
+instance Serialize MetaInfo where
+  put _ = return ()
+  get = return $ MetaInfo () "" "" ()
+
+instance Serialize (Data JSONTag) where
+  put (JSONData json) = do
+    putByteString "1"
+    put json
+  get = do
+    t <- getBytes 1
+    when (t /= "1") $ fail "expected json tag"
+    JSONData <$> get
+
+instance Serialize (Data HierarchyTag) where
+  put (HierarchyNode x) = do
+    putByteString "2"
+    put x
+  get = do
+    t <- getBytes 1
+    when (t /= "2") $ fail "expected hierarchy node tag"
+    HierarchyNode <$> get
+
+instance Serialize (Data HistoryTag) where
+  put (HistoryNode x) = do
+    putByteString "3"
+    put x
+  get = do
+    t <- getBytes 1
+    when (t /= "3") $ fail "expected history node tag"
+    HistoryNode <$> get
 
 type JSONData = Data JSONTag
 type HierarchyNode = Data HierarchyTag
