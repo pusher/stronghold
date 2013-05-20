@@ -79,6 +79,36 @@ type JSON' = Either (Ref JSONTag) JSON
 type Hierarchy = Mu (Ref HierarchyTag) (TreeNode JSON' Text)
 type History = Mu (Ref HistoryTag) (ListNode (MetaInfo, Hierarchy))
 
+refJSON :: JSON -> JSON'
+refJSON = Right
+
+derefJSON :: JSON' -> StoreOp JSON
+derefJSON (Right x) = return x
+derefJSON (Left r) = do
+  JSONData d <- get r
+  return d
+
+refHistory :: ListNode (MetaInfo, Hierarchy) History -> History
+refHistory = Mu . Right
+
+derefHistory :: History -> StoreOp (ListNode (MetaInfo, Hierarchy) History)
+derefHistory (Mu (Right x)) = return x
+derefHistory (Mu (Left r)) = do
+  HistoryNode l <- get r
+  return $
+    case l of
+      Nil -> Nil
+      Cons (meta, hierarchy) history -> Cons (meta, Mu (Left hierarchy)) (Mu (Left history))
+
+refHierarchy :: TreeNode JSON' Text Hierarchy -> Hierarchy
+refHierarchy = Mu . Right
+
+derefHierarchy :: Hierarchy -> StoreOp (TreeNode JSON' Text Hierarchy)
+derefHierarchy (Mu (Right x)) = return x
+derefHierarchy (Mu (Left r)) = do
+  HierarchyNode (TreeNode l json) <- get r
+  return $ TreeNode (map (\(k, v) -> (k, Mu (Left v))) l) (Left json)
+
 -- These types specify data structures with holes.
 data HistoryCtx = HistoryCtx History [(MetaInfo, Hierarchy)]
 data HierarchyCtx = HierarchyCtx [([Hierarchy], [Hierarchy], JSON')]
@@ -101,3 +131,4 @@ echoHandler = do
 
 main :: IO ()
 main = quickHttpServe site
+
