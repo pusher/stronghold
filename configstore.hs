@@ -1,10 +1,16 @@
-{-# LANGUAGE GADTs, EmptyDataDecls, DataKinds, KindSignatures #-}
+{-# LANGUAGE GADTs, EmptyDataDecls, DataKinds, KindSignatures, OverloadedStrings #-}
 module Main where
 
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import qualified Data.Aeson as Aeson
+
+import Control.Applicative
 import Control.Monad.Operational
+
+import Snap.Core
+import Snap.Util.FileServe
+import Snap.Http.Server
 
 type JSON = Aeson.Value
 
@@ -79,4 +85,19 @@ data HierarchyCtx = HierarchyCtx [([Hierarchy], [Hierarchy], JSON')]
 
 data Zipper = Zipper HistoryCtx MetaInfo HierarchyCtx Hierarchy
 
-main = print "hello world"
+site :: Snap ()
+site =
+    ifTop (writeBS "hello world") <|>
+    route [ ("foo", writeBS "bar")
+          , ("echo/:echoparam", echoHandler)
+          ] <|>
+    dir "static" (serveDirectory ".")
+
+echoHandler :: Snap ()
+echoHandler = do
+    param <- getParam "echoparam"
+    maybe (writeBS "must specify echo/param in URL")
+          writeBS param
+
+main :: IO ()
+main = quickHttpServe site
