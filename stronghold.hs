@@ -41,6 +41,9 @@ type HistoryNode = Data HistoryTag
 data Ref :: Tag -> * where
   Ref :: ByteString -> Ref a
 
+emptyObject :: Ref JSONTag -> Bool
+emptyObject = undefined
+
 -- This defines the operations that are possible on the data in zookeeper
 data StoreInstr a where
   Put :: Data t -> StoreInstr (Ref t)
@@ -79,6 +82,10 @@ type JSON' = Either (Ref JSONTag) JSON
 type Hierarchy = Mu (Ref HierarchyTag) (TreeNode JSON' Text)
 type History = Mu (Ref HistoryTag) (ListNode (MetaInfo, Hierarchy))
 
+emptyObject' :: JSON' -> Bool
+emptyObject' (Left x) = emptyObject x
+emptyObject' (Right x) = Aeson.object [] == x
+
 refJSON :: JSON -> JSON'
 refJSON = Right
 
@@ -109,11 +116,8 @@ derefHierarchy (Mu (Left r)) = do
   HierarchyNode (TreeNode l json) <- get r
   return $ TreeNode (map (\(k, v) -> (k, Mu (Left v))) l) (Left json)
 
--- These types specify data structures with holes.
-data HistoryCtx = HistoryCtx History [(MetaInfo, TreeNode JSON' Text Hierarchy)]
 data HierarchyCtx = HierarchyCtx [(Text, [(Text, Hierarchy)], JSON')]
-
-data Zipper = Zipper HistoryCtx MetaInfo HierarchyCtx (TreeNode JSON' Text Hierarchy)
+data HierarchyZipper = HierarchyZipper HierarchyCtx (TreeNode JSON' Text Hierarchy)
 
 delete :: Eq k => k -> [(k, v)] -> [(k, v)]
 delete _ [] = []
@@ -123,77 +127,76 @@ delete k1 ((k2, v):xs) =
   else
     delete k1 xs
 
-down :: Text -> Zipper -> StoreOp Zipper
-down key (Zipper histCtx meta (HierarchyCtx hierCtx) (TreeNode children json)) =
+down :: Text -> HierarchyZipper -> StoreOp HierarchyZipper
+down key (HierarchyZipper (HierarchyCtx hierCtx) (TreeNode children json)) =
   let hierCtx' = HierarchyCtx ((key, delete key children, json):hierCtx)
       def = return $ TreeNode [] (refJSON (Aeson.object [])) in
-        Zipper histCtx meta hierCtx' <$> maybe def derefHierarchy (lookup key children)
+        HierarchyZipper hierCtx' <$> maybe def derefHierarchy (lookup key children)
 
-up :: Zipper -> StoreOp Zipper
-up (Zipper histCtx meta (HierarchyCtx []) hier) =
-  return $ Zipper histCtx meta (HierarchyCtx []) hier
-up (Zipper histCtx meta (HierarchyCtx ((key, children', json'):xs)) hier@(TreeNode children json)) =
-  if null children then do
-    json'' <- derefJSON json
-    if json'' == Aeson.object [] then
-      return $ Zipper histCtx meta (HierarchyCtx xs) (TreeNode children' json')
-     else
-      construct (refJSON json'')
-  else
-    construct json
- where
-  construct json' =
-    return $ Zipper histCtx meta (HierarchyCtx xs) (TreeNode ((key, refHierarchy hier):children) json')
+up :: HierarchyZipper -> HierarchyZipper
+up z@(HierarchyZipper (HierarchyCtx []) _) = z
+up (HierarchyZipper (HierarchyCtx ((key, children', json'):xs)) hier@(TreeNode children json)) =
+  HierarchyZipper (HierarchyCtx xs) $
+    if null children && emptyObject' json then do
+      (TreeNode children' json')
+    else
+      (TreeNode ((key, refHierarchy hier):children') json')
 
-isTop :: Zipper -> Bool
-isTop (Zipper _ _ (HierarchyCtx x) _ ) = null x
+isTop :: HierarchyZipper -> Bool
+isTop (HierarchyZipper (HierarchyCtx x) _) = null x
 
-top :: Zipper -> StoreOp Zipper
+top :: HierarchyZipper -> HierarchyZipper
 top z =
   if isTop z then
-    return z
+    z
   else
-    up z >>= top
+    top (up z)
 
-getJSON' :: Zipper -> JSON'
-getJSON' (Zipper _ _ _ (TreeNode _ json)) = json
+getJSON' :: HierarchyZipper -> JSON'
+getJSON' (HierarchyZipper _ (TreeNode _ json)) = json
 
-getJSON :: Zipper -> StoreOp (Zipper, JSON)
-getJSON (Zipper histCtx meta hierCtx (TreeNode children json')) = do
+getJSON :: HierarchyZipper -> StoreOp (HierarchyZipper, JSON)
+getJSON (HierarchyZipper hierCtx (TreeNode children json')) = do
   json <- derefJSON json'
-  return (Zipper histCtx meta hierCtx (TreeNode children (refJSON json)), json)
+  return (HierarchyZipper hierCtx (TreeNode children (refJSON json)), json)
 
-setJSON' :: JSON' -> Zipper -> Zipper
-setJSON' json' (Zipper histCtx meta hierCtx (TreeNode children _)) =
-  Zipper histCtx meta hierCtx (TreeNode children json')
+setJSON' :: JSON' -> HierarchyZipper -> HierarchyZipper
+setJSON' json' (HierarchyZipper hierCtx (TreeNode children _)) =
+  HierarchyZipper hierCtx (TreeNode children json')
 
-children :: Zipper -> [Text]
-children (Zipper _ _ _ (TreeNode children _)) = map fst children
+children :: HierarchyZipper -> [Text]
+children (HierarchyZipper _ (TreeNode children _)) = map fst children
 
-left :: Zipper -> StoreOp Zipper
-left z = do
-  Zipper (HistoryCtx l r) meta hierCtx hier <- top z
+data HistoryCtx = HistoryCtx History [(MetaInfo, Hierarchy)]
+data HistoryZipper = HistoryZipper HistoryCtx MetaInfo Hierarchy
+
+back :: HistoryZipper -> StoreOp HistoryZipper
+back (HistoryZipper (HistoryCtx l r) meta hier) = do
   l' <- derefHistory l
-  case l' of
-    Nil -> return $ Zipper (HistoryCtx (refHistory l') r) meta hierCtx hier
-    Cons (meta', hier') xs -> do
-      hier'' <- derefHierarchy hier'
-      return $ Zipper (HistoryCtx xs ((meta, hier):r)) meta' (HierarchyCtx []) hier''
+  return $ case l' of
+    Nil -> HistoryZipper (HistoryCtx (refHistory l') r) meta hier
+    Cons (meta', hier') xs ->
+      HistoryZipper (HistoryCtx xs ((meta, hier):r)) meta' hier'
 
-right :: Zipper -> StoreOp Zipper
-right z = do
-  z'@(Zipper (HistoryCtx l r) meta hierCtx hier) <- top z
+forward :: HistoryZipper -> HistoryZipper
+forward z@(HistoryZipper (HistoryCtx l r) meta hier) = do
   case r of
-    [] -> return z'
+    [] -> z
     ((meta', hier'):xs) ->
-      return $ Zipper (HistoryCtx (refHistory (Cons (meta, refHierarchy hier) l)) xs) meta' (HierarchyCtx []) hier'
+      HistoryZipper (HistoryCtx (refHistory (Cons (meta, hier) l)) xs) meta' hier'
 
-getMetaInfo :: Zipper -> MetaInfo
-getMetaInfo (Zipper _ meta _ _) = meta
+getMetaInfo :: HistoryZipper -> MetaInfo
+getMetaInfo (HistoryZipper _ meta _) = meta
 
-setMetaInfo :: MetaInfo -> Zipper -> Zipper
-setMetaInfo meta (Zipper histCtx _ hierCtx hier) =
-  Zipper histCtx meta hierCtx hier
+setMetaInfo :: MetaInfo -> HistoryZipper -> HistoryZipper
+setMetaInfo meta (HistoryZipper histCtx _ hier) =
+  HistoryZipper histCtx meta hier
+
+getHierarchy :: HistoryZipper -> Hierarchy
+getHierarchy (HistoryZipper _ _ hier) = hier
+
+append :: MetaInfo -> Hierarchy -> HistoryZipper -> HistoryZipper
+append = undefined
 
 site :: Snap ()
 site =
