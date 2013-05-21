@@ -6,4 +6,5 @@ cabal-version:       >=1.8
 executable stronghold
   main-is:             stronghold.hs
   build-depends:       base ==4.6.*, operational, bytestring, text, aeson,
-                       snap-server, snap-core
+                       snap-server, snap-core, cereal, zookeeper, cryptohash,
+                       base16-bytestring

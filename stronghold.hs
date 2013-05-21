@@ -1,16 +1,25 @@
-{-# LANGUAGE GADTs, EmptyDataDecls, DataKinds, KindSignatures, OverloadedStrings #-}
+{-# LANGUAGE GADTs, EmptyDataDecls, DataKinds, KindSignatures, OverloadedStrings, ScopedTypeVariables #-}
 module Main where
 
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Base16 as Base16
+import qualified Data.ByteString.Char8 as BC
 import Data.Text (Text)
+import Data.Text.Encoding (encodeUtf8, decodeUtf8)
 import qualified Data.Aeson as Aeson
+import Data.Serialize
 
 import Control.Applicative
+import Control.Monad
 import Control.Monad.Operational
 
 import Snap.Core
 import Snap.Util.FileServe
 import Snap.Http.Server
+
+import Crypto.Hash.SHA1
+
+import qualified Zookeeper as Zoo
 
 type JSON = Aeson.Value
 
@@ -26,6 +35,23 @@ data Tag =
   HierarchyTag |
   HistoryTag
 
+data STag :: Tag -> * where
+  JSONTag' :: STag JSONTag
+  HierarchyTag' :: STag HierarchyTag
+  HistoryTag' :: STag HistoryTag
+
+class TagClass t where
+  tag :: STag t
+
+instance TagClass JSONTag where
+  tag = JSONTag'
+
+instance TagClass HierarchyTag where
+  tag = HierarchyTag'
+
+instance TagClass HistoryTag where
+  tag = HistoryTag'
+
 data TreeNode x k v = TreeNode [(k, v)] x
 data ListNode x r = Nil | Cons x r
 
@@ -39,25 +65,89 @@ type HierarchyNode = Data HierarchyTag
 type HistoryNode = Data HistoryTag
 
 data Ref :: Tag -> * where
-  Ref :: ByteString -> Ref a
+  Ref :: ByteString -> Ref t
 
+instance Serialize Aeson.Value where
+  put = put . Aeson.encode
+  get = maybe (fail "error parsing json") return =<< Aeson.decode <$> get
+
+instance Serialize (Ref t) where
+  put (Ref x) = put x
+  get = Ref <$> get
+
+instance (Serialize k, Serialize v, Serialize x) => Serialize (TreeNode x k v) where
+  put (TreeNode l x) = put (l, x)
+  get = (\(l, x) -> TreeNode l x) <$> get
+
+instance Serialize Text where
+  put = put . encodeUtf8
+  get = decodeUtf8 <$> get
+
+instance (Serialize x, Serialize r) => Serialize (ListNode x r) where
+  put Nil = putByteString "n"
+  put (Cons x xs) = do
+    putByteString "c"
+    put (x, xs)
+
+  get = do
+    b <- getBytes 1
+    if b == "n" then
+      return Nil
+     else if b == "c" then
+      (\(x, xs) -> Cons x xs) <$> get
+     else
+      fail "unknown listnode type"
+
+-- FIXME
+instance Serialize MetaInfo where
+  put _ = return ()
+  get = return $ MetaInfo () "" "" ()
+
+instance TagClass t => Serialize (Data t) where
+  put (JSONData json) = do
+    putByteString "1"
+    put json
+  put (HierarchyNode x) = do
+    putByteString "2"
+    put x
+  put (HistoryNode x) = do
+    putByteString "3"
+    put x
+
+  get = do
+    t <- getBytes 1
+    case (tag :: STag t) of
+      JSONTag' -> do
+        when (t /= "1") $ fail "expected json tag"
+        JSONData <$> get
+      HierarchyTag' -> do
+        when (t /= "2") $ fail "expected hierarchy node tag"
+        HierarchyNode <$> get
+      HistoryTag' -> do
+        when (t /= "3") $ fail "expected history node tag"
+        HistoryNode <$> get
+
+emptyObjectHash :: ByteString
+emptyObjectHash = hash (encode (JSONData (Aeson.object [])))
+
+-- Arguably, this should be inside the monad.
 emptyObject :: Ref JSONTag -> Bool
-emptyObject = undefined
+emptyObject (Ref x) = x == emptyObjectHash
 
 -- This defines the operations that are possible on the data in zookeeper
 data StoreInstr a where
-  Put :: Data t -> StoreInstr (Ref t)
-  Get :: Ref t -> StoreInstr (Data t)
+  Store :: TagClass t => Data t -> StoreInstr (Ref t)
+  Load :: TagClass t => Ref t -> StoreInstr (Data t)
   GetHead :: StoreInstr (Ref HistoryTag)
   UpdateHead :: Ref HistoryTag -> Ref HistoryTag -> StoreInstr Bool
 
 type StoreOp a = Program StoreInstr a
 
-put :: Data x -> StoreOp (Ref x)
-put = singleton . Put
+store :: TagClass x => Data x -> StoreOp (Ref x)
+store = singleton . Store
 
-get :: Ref x -> StoreOp (Data x)
-get = singleton . Get
+load :: TagClass x => Ref x -> StoreOp (Data x)
+load = singleton . Load
 
 getHead :: StoreOp (Ref HistoryTag)
 getHead = singleton GetHead
@@ -65,9 +155,36 @@ getHead = singleton GetHead
 updateHead :: Ref HistoryTag -> Ref HistoryTag -> StoreOp Bool
 updateHead prev next = singleton $ UpdateHead prev next
 
+getZkPath :: ByteString -> String
+getZkPath = ("/ref/" ++) . BC.unpack . Base16.encode
+
 -- It should be possible to run a store operation
-runStoreOp :: StoreOp a -> IO a
-runStoreOp = undefined
+runStoreOp :: Zoo.ZHandle -> StoreOp a -> IO a
+runStoreOp zk op =
+  case view op of
+    Return x -> return x
+    (Store d) :>>= rest -> do
+      let d' = encode d
+      let h = hash d'
+      Zoo.set zk (getZkPath h) (Just d') (-1)
+      runStoreOp zk (rest (Ref h))
+    (Load (Ref r)) :>>= rest -> do
+      (dat, _) <- Zoo.get zk (getZkPath r) Zoo.NoWatch
+      dat' <- maybe (fail "no such ref") return dat
+      either fail (runStoreOp zk . rest) (decode dat')
+    GetHead :>>= rest -> do
+      (dat, _) <- Zoo.get zk "/head" Zoo.NoWatch
+      head <- maybe (fail "no head") return dat
+      runStoreOp zk (rest (Ref (fst (Base16.decode head))))
+    (UpdateHead (Ref old) (Ref new)) :>>= rest -> do
+      (dat, stat) <- Zoo.get zk "/head" Zoo.NoWatch
+      dat' <- maybe (fail "no head") return dat
+      if Base16.encode old == dat' then do
+        -- FIXME: exceptions here should be caught
+        result <- Zoo.set zk "/head" (Just (Base16.encode new)) (fromIntegral (Zoo.stat_version stat))
+        runStoreOp zk (rest True)
+       else
+        runStoreOp zk (rest False)
 
 -- This is a little tricky, if you're having difficulty understanding, read up 
 -- on fixed point combinators and fixed point types.
@@ -84,22 +201,22 @@ type History = Mu (Ref HistoryTag) (ListNode (MetaInfo, Hierarchy))
 
 storeJSON :: JSON' -> StoreOp (Ref JSONTag)
 storeJSON (Left x) = return x
-storeJSON (Right x) = put $ JSONData x
+storeJSON (Right x) = store $ JSONData x
 
 storeHierarchy :: Hierarchy -> StoreOp (Ref HierarchyTag)
 storeHierarchy (Mu (Left x)) = return x
 storeHierarchy (Mu (Right (TreeNode l json))) = do
   json' <- storeJSON json
   l' <- mapM (\(k, v) -> (,) k <$> storeHierarchy v) l
-  put $ HierarchyNode (TreeNode l' json')
+  store $ HierarchyNode (TreeNode l' json')
 
 storeHistory :: History -> StoreOp (Ref HistoryTag)
 storeHistory (Mu (Left x)) = return x
-storeHistory (Mu (Right Nil)) = put $ HistoryNode Nil
+storeHistory (Mu (Right Nil)) = store $ HistoryNode Nil
 storeHistory (Mu (Right (Cons (meta, hier) xs))) = do
   xs' <- storeHistory xs
   hier' <- storeHierarchy hier
-  put $ HistoryNode $ Cons (meta, hier') xs'
+  store $ HistoryNode $ Cons (meta, hier') xs'
 
 emptyObject' :: JSON' -> Bool
 emptyObject' (Left x) = emptyObject x
@@ -111,7 +228,7 @@ refJSON = Right
 derefJSON :: JSON' -> StoreOp JSON
 derefJSON (Right x) = return x
 derefJSON (Left r) = do
-  JSONData d <- get r
+  JSONData d <- load r
   return d
 
 refHistory :: ListNode (MetaInfo, Hierarchy) History -> History
@@ -120,7 +237,7 @@ refHistory = Mu . Right
 derefHistory :: History -> StoreOp (ListNode (MetaInfo, Hierarchy) History)
 derefHistory (Mu (Right x)) = return x
 derefHistory (Mu (Left r)) = do
-  HistoryNode l <- get r
+  HistoryNode l <- load r
   return $
     case l of
       Nil -> Nil
@@ -132,7 +249,7 @@ refHierarchy = Mu . Right
 derefHierarchy :: Hierarchy -> StoreOp (TreeNode JSON' Text Hierarchy)
 derefHierarchy (Mu (Right x)) = return x
 derefHierarchy (Mu (Left r)) = do
-  HierarchyNode (TreeNode l json) <- get r
+  HierarchyNode (TreeNode l json) <- load r
   return $ TreeNode (map (\(k, v) -> (k, Mu (Left v))) l) (Left json)
 
 data HierarchyCtx = HierarchyCtx [(Text, [(Text, Hierarchy)], JSON')]
@@ -171,11 +288,11 @@ top z =
   else
     top (up z)
 
-getJSON' :: HierarchyZipper -> JSON'
-getJSON' (HierarchyZipper _ (TreeNode _ json)) = json
+loadJSON' :: HierarchyZipper -> JSON'
+loadJSON' (HierarchyZipper _ (TreeNode _ json)) = json
 
-getJSON :: HierarchyZipper -> StoreOp (HierarchyZipper, JSON)
-getJSON (HierarchyZipper hierCtx (TreeNode children json')) = do
+loadJSON :: HierarchyZipper -> StoreOp (HierarchyZipper, JSON)
+loadJSON (HierarchyZipper hierCtx (TreeNode children json')) = do
   json <- derefJSON json'
   return (HierarchyZipper hierCtx (TreeNode children (refJSON json)), json)
 
@@ -219,15 +336,15 @@ forwardMost z =
   else
     forwardMost (forward z)
 
-getMetaInfo :: HistoryZipper -> MetaInfo
-getMetaInfo (HistoryZipper _ meta _) = meta
+loadMetaInfo :: HistoryZipper -> MetaInfo
+loadMetaInfo (HistoryZipper _ meta _) = meta
 
 setMetaInfo :: MetaInfo -> HistoryZipper -> HistoryZipper
 setMetaInfo meta (HistoryZipper histCtx _ hier) =
   HistoryZipper histCtx meta hier
 
-getHierarchy :: HistoryZipper -> Hierarchy
-getHierarchy (HistoryZipper _ _ hier) = hier
+loadHierarchy :: HistoryZipper -> Hierarchy
+loadHierarchy (HistoryZipper _ _ hier) = hier
 
 append :: MetaInfo -> Hierarchy -> HistoryZipper -> HistoryZipper
 append = undefined
@@ -251,5 +368,12 @@ echoHandler = do
     maybe (writeBS "must specify echo/param in URL")
           writeBS param
 
+watcher :: Zoo.ZHandle -> Zoo.EventType -> Zoo.State -> String -> IO ()
+watcher _zh zEventType zState path =
+  putStrLn ("watch: '" ++ path ++ "' :: " ++ show zEventType ++ " " ++ show zState)
+
 main :: IO ()
-main = quickHttpServe site
+main = do
+  let host_port = "localhost:2181"
+  zk <- Zoo.init host_port (Just watcher) 10000 -- last param is the timeout
+  quickHttpServe site
