@@ -3,6 +3,7 @@ module Main where
 
 import Data.ByteString (ByteString)
 import Data.Text (Text)
+import Data.Text.Encoding (encodeUtf8, decodeUtf8)
 import qualified Data.Aeson as Aeson
 import Data.Serialize
 
@@ -73,8 +74,8 @@ instance (Serialize k, Serialize v, Serialize x) => Serialize (TreeNode x k v) w
   get = (\(l, x) -> TreeNode l x) <$> get
 
 instance Serialize Text where
-  put = undefined
-  get = undefined
+  put = put . encodeUtf8
+  get = decodeUtf8 <$> get
 
 instance (Serialize x, Serialize r) => Serialize (ListNode x r) where
   put Nil = putByteString "n"
