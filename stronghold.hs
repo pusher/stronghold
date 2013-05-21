@@ -14,9 +14,9 @@ import Control.Applicative
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Operational
+import Control.Exception (tryJust)
 
 import Snap.Core
-import Snap.Util.FileServe
 import Snap.Http.Server
 
 import Crypto.Hash.SHA1
@@ -69,6 +69,9 @@ type HistoryNode = Data HistoryTag
 data Ref :: Tag -> * where
   Ref :: ByteString -> Ref t
 
+instance Eq (Ref t) where
+  (Ref a) == (Ref b) = a == b
+
 instance Serialize Aeson.Value where
   put = put . Aeson.encode
   get = maybe (fail "error parsing json") return =<< Aeson.decode <$> get
@@ -100,10 +103,9 @@ instance (Serialize x, Serialize r) => Serialize (ListNode x r) where
      else
       fail "unknown listnode type"
 
--- FIXME
 instance Serialize MetaInfo where
-  put _ = return ()
-  get = return $ MetaInfo () "" "" ()
+  put (MetaInfo a b c d) = put (a, b, c, d)
+  get = (\(a, b, c, d) -> MetaInfo a b c d) <$> get
 
 instance TagClass t => Serialize (Data t) where
   put (JSONData json) = do
@@ -176,6 +178,10 @@ isRight _ = False
 validHistoryNode :: ByteString -> Bool
 validHistoryNode s = isRight (decode s :: Either String (Data HistoryTag))
 
+isErrNodeExists :: Zoo.ZooError -> Bool
+isErrNodeExists (Zoo.ErrNodeExists _) = True
+isErrNodeExists _ = False
+
 -- It should be possible to run a store operation
 runStoreOp :: Zoo.ZHandle -> StoreOp a -> IO a
 runStoreOp zk op =
@@ -184,7 +190,7 @@ runStoreOp zk op =
     (Store d) :>>= rest -> do
       let d' = encode d
       let h = hash d'
-      Zoo.create zk (getZkPath h) (Just d') Zoo.OpenAclUnsafe (Zoo.CreateMode False False)
+      tryJust (guard . isErrNodeExists) $ Zoo.create zk (getZkPath h) (Just d') Zoo.OpenAclUnsafe (Zoo.CreateMode False False)
       runStoreOp zk (rest (Ref h))
     (Load (Ref r)) :>>= rest -> do
       dat <- fetchRef zk r
@@ -300,6 +306,9 @@ down key (HierarchyZipper (HierarchyCtx hierCtx) (TreeNode children json)) =
       def = return $ TreeNode [] (refJSON (Aeson.object [])) in
         HierarchyZipper hierCtx' <$> maybe def derefHierarchy (lookup key children)
 
+followPath :: [Text] -> HierarchyZipper -> StoreOp HierarchyZipper
+followPath = flip (foldM (flip down))
+
 up :: HierarchyZipper -> HierarchyZipper
 up z@(HierarchyZipper (HierarchyCtx []) _) = z
 up (HierarchyZipper (HierarchyCtx ((key, children', json'):xs)) hier@(TreeNode children json)) =
@@ -334,8 +343,8 @@ setJSON' json' (HierarchyZipper hierCtx (TreeNode children _)) =
 children :: HierarchyZipper -> [Text]
 children (HierarchyZipper _ (TreeNode children _)) = map fst children
 
-solidifyHierarchy :: HierarchyZipper -> Hierarchy
-solidifyHierarchy hier =
+solidifyHierarchyZipper :: HierarchyZipper -> Hierarchy
+solidifyHierarchyZipper hier =
   let HierarchyZipper _ hier' = top hier in
     refHierarchy hier'
 
@@ -384,13 +393,24 @@ setMetaInfo meta (HistoryZipper histCtx _ hier) =
 loadHierarchy :: HistoryZipper -> Hierarchy
 loadHierarchy (HistoryZipper _ _ hier) = hier
 
-append :: MetaInfo -> Hierarchy -> HistoryZipper -> HistoryZipper
-append = undefined
-
 solidifyHistory :: HistoryZipper -> History
 solidifyHistory z =
   let (HistoryZipper (HistoryCtx l _) meta hier) = forwardMost z in
     refHistory (Cons (meta, hier) l)
+
+emptyHierarchy :: Hierarchy
+emptyHierarchy =
+  refHierarchy (TreeNode [] (refJSON (Aeson.object [])))
+
+lastHierarchy :: History -> StoreOp Hierarchy
+lastHierarchy hist = do
+  hist' <- derefHistory hist
+  case hist' of
+    Nil -> return emptyHierarchy
+    Cons (_, hier) _ -> return hier
+
+addHistory :: MetaInfo -> Hierarchy -> History -> History
+addHistory meta hier hist = refHistory (Cons (meta, hier) hist)
 
 site :: Zoo.ZHandle -> Snap ()
 site zk =
@@ -414,8 +434,9 @@ site zk =
             ("next", next hist),
             ("info", info hist),
             ("materialized/", materialized hist),
-            ("peculiar/", peculiar hist)
-           ] <|> update hist
+            ("peculiar/", peculiar hist),
+            ("update/", update ref')
+           ]
       Nothing -> writeBS "failed, invalid reference" -- TODO: fail properly
 
   fetchHead :: Snap ()
@@ -452,14 +473,44 @@ site zk =
     undefined
 
   peculiar :: History -> Snap ()
-  peculiar ref = method GET $ do
+  peculiar hist = method GET $ do
     path <- rqPathInfo <$> getRequest
-    undefined
+    let parts = Text.splitOn "/" (decodeUtf8 path)
+    json <- liftIO $ runStoreOp zk $ do
+      hier <- lastHierarchy hist
+      z <- makeHierarchyZipper hier
+      z' <- followPath parts z
+      (_, json) <- loadJSON z'
+      return json
+    writeLBS $ Aeson.encode json
 
-  update :: History -> Snap ()
+  update :: Ref HistoryTag -> Snap ()
   update ref = method POST $ do
     path <- rqPathInfo <$> getRequest
-    undefined
+    let parts = Text.splitOn "/" (decodeUtf8 path)
+    body <- readRequestBody 102400
+    body' <- maybe (fail "couldn't parse body") return (Aeson.decode body)
+    success <- liftIO $ runStoreOp zk $ do
+      head <- getHead
+      if ref == head then do
+        let hist = makeHistoryTree ref
+        hier <- lastHierarchy hist
+        z <- makeHierarchyZipper hier
+        z' <- followPath parts z
+        let z'' = setJSON' (refJSON body') z'
+        let hier' = solidifyHierarchyZipper z''
+        let meta = MetaInfo () "" "" () -- FIXME
+        let hist' = addHistory meta hier' hist
+        ref' <- storeHistory hist'
+        updateHead ref ref'
+       else
+        return False
+    if success then
+      -- send a 200, maybe even send the new version ref
+      writeBS "OK"
+     else
+      -- TODO: send an error properly
+      writeBS "ERR"
 
 watcher :: Zoo.ZHandle -> Zoo.EventType -> Zoo.State -> String -> IO ()
 watcher _zh zEventType zState path =
