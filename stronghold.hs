@@ -5,12 +5,14 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base16 as Base16
 import qualified Data.ByteString.Char8 as BC
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
 import qualified Data.Aeson as Aeson
 import Data.Serialize
 
 import Control.Applicative
 import Control.Monad
+import Control.Monad.IO.Class
 import Control.Monad.Operational
 
 import Snap.Core
@@ -140,6 +142,7 @@ data StoreInstr a where
   Load :: TagClass t => Ref t -> StoreInstr (Data t)
   GetHead :: StoreInstr (Ref HistoryTag)
   UpdateHead :: Ref HistoryTag -> Ref HistoryTag -> StoreInstr Bool
+  CreateRef :: ByteString -> StoreInstr (Maybe (Ref HistoryTag))
 
 type StoreOp a = Program StoreInstr a
 
@@ -155,8 +158,23 @@ getHead = singleton GetHead
 updateHead :: Ref HistoryTag -> Ref HistoryTag -> StoreOp Bool
 updateHead prev next = singleton $ UpdateHead prev next
 
+createRef :: ByteString -> StoreOp (Maybe (Ref HistoryTag))
+createRef = singleton . CreateRef
+
 getZkPath :: ByteString -> String
 getZkPath = ("/ref/" ++) . BC.unpack . Base16.encode
+
+fetchRef :: Zoo.ZHandle -> ByteString -> IO (Maybe ByteString)
+fetchRef zk ref = do
+  (dat, _) <- Zoo.get zk (getZkPath ref) Zoo.NoWatch
+  return dat
+
+isRight :: Either a b -> Bool
+isRight (Right _) = True
+isRight _ = False
+
+validHistoryNode :: ByteString -> Bool
+validHistoryNode s = isRight (decode s :: Either String (Data HistoryTag))
 
 -- It should be possible to run a store operation
 runStoreOp :: Zoo.ZHandle -> StoreOp a -> IO a
@@ -166,10 +184,10 @@ runStoreOp zk op =
     (Store d) :>>= rest -> do
       let d' = encode d
       let h = hash d'
-      Zoo.set zk (getZkPath h) (Just d') (-1)
+      Zoo.create zk (getZkPath h) (Just d') Zoo.OpenAclUnsafe (Zoo.CreateMode False False)
       runStoreOp zk (rest (Ref h))
     (Load (Ref r)) :>>= rest -> do
-      (dat, _) <- Zoo.get zk (getZkPath r) Zoo.NoWatch
+      dat <- fetchRef zk r
       dat' <- maybe (fail "no such ref") return dat
       either fail (runStoreOp zk . rest) (decode dat')
     GetHead :>>= rest -> do
@@ -185,6 +203,13 @@ runStoreOp zk op =
         runStoreOp zk (rest True)
        else
         runStoreOp zk (rest False)
+    (CreateRef r) :>>= rest -> do
+      let (r', _) = Base16.decode r
+      dat <- fetchRef zk r'
+      if maybe False validHistoryNode dat then
+        runStoreOp zk (rest (Just (Ref r')))
+       else
+        runStoreOp zk (rest Nothing)
 
 -- This is a little tricky, if you're having difficulty understanding, read up 
 -- on fixed point combinators and fixed point types.
@@ -198,6 +223,9 @@ newtype Mu t m = Mu (Either t (m (Mu t m)))
 type JSON' = Either (Ref JSONTag) JSON
 type Hierarchy = Mu (Ref HierarchyTag) (TreeNode JSON' Text)
 type History = Mu (Ref HistoryTag) (ListNode (MetaInfo, Hierarchy))
+
+makeHistoryTree :: Ref HistoryTag -> History
+makeHistoryTree = Mu . Left
 
 storeJSON :: JSON' -> StoreOp (Ref JSONTag)
 storeJSON (Left x) = return x
@@ -255,6 +283,9 @@ derefHierarchy (Mu (Left r)) = do
 data HierarchyCtx = HierarchyCtx [(Text, [(Text, Hierarchy)], JSON')]
 data HierarchyZipper = HierarchyZipper HierarchyCtx (TreeNode JSON' Text Hierarchy)
 
+makeHierarchyZipper :: Hierarchy -> StoreOp HierarchyZipper
+makeHierarchyZipper hier = HierarchyZipper (HierarchyCtx []) <$> derefHierarchy hier
+
 delete :: Eq k => k -> [(k, v)] -> [(k, v)]
 delete _ [] = []
 delete k1 ((k2, v):xs) =
@@ -308,6 +339,13 @@ solidifyHierarchy hier =
   let HierarchyZipper _ hier' = top hier in
     refHierarchy hier'
 
+subPaths :: HierarchyZipper -> StoreOp [Text]
+subPaths z =
+  ([""] ++) <$> concat <$> mapM (\child -> do
+    z' <- down child z
+    paths <- subPaths z'
+    return (map (\i -> Text.concat ["/", child, i]) paths)) (children z)
+
 data HistoryCtx = HistoryCtx History [(MetaInfo, Hierarchy)]
 data HistoryZipper = HistoryZipper HistoryCtx MetaInfo Hierarchy
 
@@ -354,19 +392,74 @@ solidifyHistory z =
   let (HistoryZipper (HistoryCtx l _) meta hier) = forwardMost z in
     refHistory (Cons (meta, hier) l)
 
-site :: Snap ()
-site =
-    ifTop (writeBS "hello world") <|>
-    route [ ("foo", writeBS "bar")
-          , ("echo/:echoparam", echoHandler)
-          ] <|>
-    dir "static" (serveDirectory ".")
+site :: Zoo.ZHandle -> Snap ()
+site zk =
+  ifTop (writeBS "Stronghold say hi") <|>
+  route [
+    ("head", fetchHead),
+    ("at/:timestamp", fetchTimestamp),
+    (":version/", hasVersion)
+   ]
+ where
+  hasVersion :: Snap ()
+  hasVersion = do
+    Just version <- getParam "version"
+    ref <- liftIO $ runStoreOp zk (createRef version)
+    case ref of
+      Just ref' ->
+        let hist = makeHistoryTree ref' in
+          route [
+            ("paths", paths hist),
+            ("changes", changes hist),
+            ("next", next hist),
+            ("info", info hist),
+            ("materialized/", materialized hist),
+            ("peculiar/", peculiar hist)
+           ] <|> update hist
+      Nothing -> writeBS "failed, invalid reference" -- TODO: fail properly
 
-echoHandler :: Snap ()
-echoHandler = do
-    param <- getParam "echoparam"
-    maybe (writeBS "must specify echo/param in URL")
-          writeBS param
+  fetchHead :: Snap ()
+  fetchHead = ifTop $ method GET $ do
+    (Ref head) <- liftIO $ runStoreOp zk getHead
+    writeBS (Base16.encode head)
+
+  fetchTimestamp :: Snap ()
+  fetchTimestamp = ifTop $ method GET $ undefined
+
+  paths :: History -> Snap ()
+  paths hist = ifTop $ method GET $ do
+    paths <- liftIO $ runStoreOp zk $ do
+      hist' <- derefHistory hist
+      case hist' of
+        Nil -> return []
+        Cons (_, hier) _ -> do
+          z <- makeHierarchyZipper hier
+          subPaths z
+    writeLBS (Aeson.encode paths)
+
+  changes :: History -> Snap ()
+  changes ref = ifTop $ method GET $ undefined
+
+  next :: History -> Snap ()
+  next ref = ifTop $ method GET $ undefined
+
+  info :: History -> Snap ()
+  info ref = ifTop $ method GET $ undefined
+
+  materialized :: History -> Snap ()
+  materialized ref = method GET $ do
+    path <- rqPathInfo <$> getRequest
+    undefined
+
+  peculiar :: History -> Snap ()
+  peculiar ref = method GET $ do
+    path <- rqPathInfo <$> getRequest
+    undefined
+
+  update :: History -> Snap ()
+  update ref = method POST $ do
+    path <- rqPathInfo <$> getRequest
+    undefined
 
 watcher :: Zoo.ZHandle -> Zoo.EventType -> Zoo.State -> String -> IO ()
 watcher _zh zEventType zState path =
@@ -376,4 +469,4 @@ main :: IO ()
 main = do
   let host_port = "localhost:2181"
   zk <- Zoo.init host_port (Just watcher) 10000 -- last param is the timeout
-  quickHttpServe site
+  quickHttpServe (site zk)
