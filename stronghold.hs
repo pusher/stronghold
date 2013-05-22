@@ -33,6 +33,9 @@ type Timestamp = ()
 
 data MetaInfo = MetaInfo Timestamp Comment Author ChangeSet
 
+instance Aeson.ToJSON MetaInfo where
+  toJSON (MetaInfo ts comment author changeset) = Aeson.object []
+
 data Tag =
   JSONTag |
   HierarchyTag |
@@ -496,8 +499,7 @@ site zk =
   info :: History -> Snap ()
   info hist = ifTop $ method GET $ do
     meta <- liftIO $ runStoreOp zk $ lastMetaInfo hist
-    -- send back meta
-    undefined
+    writeLBS $ Aeson.encode meta
 
   materialized :: History -> Snap ()
   materialized hist = method GET $ do
