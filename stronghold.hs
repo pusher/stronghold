@@ -9,6 +9,7 @@ import qualified Data.Text as Text
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
 import qualified Data.Aeson as Aeson
 import Data.Serialize
+import Data.HashMap.Strict (unionWith)
 
 import Control.Applicative
 import Control.Monad
@@ -419,6 +420,10 @@ lastMetaInfo hist = do
 addHistory :: MetaInfo -> Hierarchy -> History -> History
 addHistory meta hier hist = refHistory (Cons (meta, hier) hist)
 
+deepMerge :: JSON -> JSON -> JSON
+deepMerge (Aeson.Object a) (Aeson.Object b) = Aeson.Object $ unionWith deepMerge a b
+deepMerge _ x = x
+
 site :: Zoo.ZHandle -> Snap ()
 site zk =
   ifTop (writeBS "Stronghold say hi") <|>
@@ -498,11 +503,15 @@ site zk =
   materialized hist = method GET $ do
     path <- rqPathInfo <$> getRequest
     let parts = Text.splitOn "/" (decodeUtf8 path)
-    -- construct a hierarchy zipper
-    -- walk down the hierarchy, noting the JSON at each location
-    -- merge the JSONs
-    -- send back
-    undefined
+    jsons <- liftIO $ runStoreOp zk $ do
+      hier <- lastHierarchy hist
+      z <- makeHierarchyZipper hier
+      (_, json) <- getJSON z
+      snd <$> foldM (\(z', l) b -> do
+        z'' <- down b z'
+        (_, json) <- getJSON z''
+        return (z'', json:l)) (z, [json]) parts
+    writeLBS $ Aeson.encode $ foldl1 deepMerge jsons
 
   peculiar :: History -> Snap ()
   peculiar hist = method GET $ do
