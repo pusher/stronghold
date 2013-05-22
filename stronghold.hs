@@ -328,11 +328,11 @@ top z =
   else
     top (up z)
 
-loadJSON' :: HierarchyZipper -> JSON'
-loadJSON' (HierarchyZipper _ (TreeNode _ json)) = json
+getJSON' :: HierarchyZipper -> JSON'
+getJSON' (HierarchyZipper _ (TreeNode _ json)) = json
 
-loadJSON :: HierarchyZipper -> StoreOp (HierarchyZipper, JSON)
-loadJSON (HierarchyZipper hierCtx (TreeNode children json')) = do
+getJSON :: HierarchyZipper -> StoreOp (HierarchyZipper, JSON)
+getJSON (HierarchyZipper hierCtx (TreeNode children json')) = do
   json <- derefJSON json'
   return (HierarchyZipper hierCtx (TreeNode children (refJSON json)), json)
 
@@ -383,15 +383,15 @@ forwardMost z =
   else
     forwardMost (forward z)
 
-loadMetaInfo :: HistoryZipper -> MetaInfo
-loadMetaInfo (HistoryZipper _ meta _) = meta
+getMetaInfo :: HistoryZipper -> MetaInfo
+getMetaInfo (HistoryZipper _ meta _) = meta
 
 setMetaInfo :: MetaInfo -> HistoryZipper -> HistoryZipper
 setMetaInfo meta (HistoryZipper histCtx _ hier) =
   HistoryZipper histCtx meta hier
 
-loadHierarchy :: HistoryZipper -> Hierarchy
-loadHierarchy (HistoryZipper _ _ hier) = hier
+getHierarchy :: HistoryZipper -> Hierarchy
+getHierarchy (HistoryZipper _ _ hier) = hier
 
 solidifyHistory :: HistoryZipper -> History
 solidifyHistory z =
@@ -480,7 +480,7 @@ site zk =
       hier <- lastHierarchy hist
       z <- makeHierarchyZipper hier
       z' <- followPath parts z
-      (_, json) <- loadJSON z'
+      (_, json) <- getJSON z'
       return json
     writeLBS $ Aeson.encode json
 
