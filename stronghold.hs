@@ -409,6 +409,13 @@ lastHierarchy hist = do
     Nil -> return emptyHierarchy
     Cons (_, hier) _ -> return hier
 
+lastMetaInfo :: History -> StoreOp (Maybe MetaInfo)
+lastMetaInfo hist = do
+  hist' <- derefHistory hist
+  case hist' of
+    Nil -> return Nothing
+    Cons (meta, _) _ -> return (Just meta)
+
 addHistory :: MetaInfo -> Hierarchy -> History -> History
 addHistory meta hier hist = refHistory (Cons (meta, hier) hist)
 
@@ -417,7 +424,7 @@ site zk =
   ifTop (writeBS "Stronghold say hi") <|>
   route [
     ("head", fetchHead),
-    ("at/:timestamp", fetchTimestamp),
+    ("at/:timestamp", fetchAtTimestamp),
     (":version/", hasVersion)
    ]
  where
@@ -444,8 +451,13 @@ site zk =
     (Ref head) <- liftIO $ runStoreOp zk getHead
     writeBS (Base16.encode head)
 
-  fetchTimestamp :: Snap ()
-  fetchTimestamp = ifTop $ method GET $ undefined
+  fetchAtTimestamp :: Snap ()
+  fetchAtTimestamp = ifTop $ method GET $ do
+    Just ts <- getParam "timestamp"
+    -- construct a history zipper
+    -- walk back until you find a timestamp < ts
+    -- send back the reference
+    undefined
 
   paths :: History -> Snap ()
   paths hist = ifTop $ method GET $ do
@@ -459,17 +471,37 @@ site zk =
     writeLBS (Aeson.encode paths)
 
   changes :: History -> Snap ()
-  changes ref = ifTop $ method GET $ undefined
+  changes hist = ifTop $ method GET $ do
+    -- get the maximum length
+    -- create a zipper
+    -- walk back until length, noting each metainfo.
+    -- send the result
+    undefined
 
   next :: History -> Snap ()
-  next ref = ifTop $ method GET $ undefined
+  next hist = ifTop $ method GET $ do
+    head <- liftIO $ runStoreOp zk $ getHead
+    -- hist should exist in the history of head
+    -- walk through head until hist is found
+    -- if hist == head then wait for a new version
+    -- otherwise walk forward one and send the reference
+    -- if hist doesn't exist in head, then send an error
+    undefined
 
   info :: History -> Snap ()
-  info ref = ifTop $ method GET $ undefined
+  info hist = ifTop $ method GET $ do
+    meta <- liftIO $ runStoreOp zk $ lastMetaInfo hist
+    -- send back meta
+    undefined
 
   materialized :: History -> Snap ()
-  materialized ref = method GET $ do
+  materialized hist = method GET $ do
     path <- rqPathInfo <$> getRequest
+    let parts = Text.splitOn "/" (decodeUtf8 path)
+    -- construct a hierarchy zipper
+    -- walk down the hierarchy, noting the JSON at each location
+    -- merge the JSONs
+    -- send back
     undefined
 
   peculiar :: History -> Snap ()
@@ -492,8 +524,11 @@ site zk =
     body' <- maybe (fail "couldn't parse body") return (Aeson.decode body)
     success <- liftIO $ runStoreOp zk $ do
       head <- getHead
+      -- This is the wrong way to decide whether to attempt an update.
+      -- it should compare the hashes of the JSONs on the path to the node and 
+      -- the hash of the node itself.
       if ref == head then do
-        let hist = makeHistoryTree ref
+        let hist = makeHistoryTree head
         hier <- lastHierarchy hist
         z <- makeHierarchyZipper hier
         z' <- followPath parts z
@@ -501,15 +536,15 @@ site zk =
         let hier' = solidifyHierarchyZipper z''
         let meta = MetaInfo () "" "" () -- FIXME
         let hist' = addHistory meta hier' hist
-        ref' <- storeHistory hist'
-        updateHead ref ref'
+        head' <- storeHistory hist'
+        updateHead head head'
        else
         return False
     if success then
       -- send a 200, maybe even send the new version ref
       writeBS "OK"
      else
-      -- TODO: send an error properly
+      -- TODO: send the error back properly
       writeBS "ERR"
 
 watcher :: Zoo.ZHandle -> Zoo.EventType -> Zoo.State -> String -> IO ()
