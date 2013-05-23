@@ -297,15 +297,6 @@ derefHierarchy (Mu (Left r)) = do
   HierarchyNode (TreeNode l json) <- load r
   return $ TreeNode (HashMap.map (\v -> Mu (Left v)) l) (Left json)
 
-anyM :: Monad m => (a -> m Bool) -> [a] -> m Bool
-anyM _ [] = return False
-anyM f (x:xs) = do
-  b <- f x
-  if b then
-    return True
-   else
-    anyM f xs
-
 data HierarchyCtx = HierarchyCtx [(Text, HashMap Text Hierarchy, JSON')]
 data HierarchyZipper = HierarchyZipper HierarchyCtx (TreeNode JSON' Text Hierarchy)
 
