@@ -1,6 +1,7 @@
 {-# LANGUAGE GADTs, EmptyDataDecls, DataKinds, KindSignatures, OverloadedStrings, ScopedTypeVariables #-}
 module Main where
 
+import Data.Maybe (fromJust)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base16 as Base16
 import qualified Data.ByteString.Char8 as BC
@@ -11,6 +12,7 @@ import qualified Data.Aeson as Aeson
 import Data.Serialize
 import Data.HashMap.Strict (HashMap, unionWith)
 import qualified Data.HashMap.Strict as HashMap
+import qualified Data.HashSet as HashSet
 import Data.Hashable (Hashable)
 
 import Control.Applicative
@@ -305,10 +307,6 @@ anyM f (x:xs) = do
    else
     anyM f xs
 
-compareHierarchies :: Hierarchy -> Hierarchy -> StoreOp Bool
-compareHierarchies (Mu (Left a)) (Mu (Left b)) = return $ a == b
-compareHierarchies (Mu (Right a)) (Mu (Right b)) = undefined
-
 data HierarchyCtx = HierarchyCtx [(Text, HashMap Text Hierarchy, JSON')]
 data HierarchyZipper = HierarchyZipper HierarchyCtx (TreeNode JSON' Text Hierarchy)
 
@@ -369,9 +367,6 @@ subPaths z =
     z' <- down child z
     paths <- subPaths z'
     return (map (\i -> Text.concat ["/", child, i]) paths)) (children z)
-
-comparePaths :: HierarchyZipper -> HierarchyZipper -> StoreOp Bool
-comparePaths (HierarchyZipper ctx1 hier1) (HierarchyZipper ctx2 hier2) = undefined
 
 data HistoryCtx = HistoryCtx History [(MetaInfo, Hierarchy)]
 data HistoryZipper = HistoryZipper HistoryCtx MetaInfo Hierarchy
@@ -461,8 +456,7 @@ updateHierarchy meta parts json ref = do
   attemptUpdate :: Ref HistoryTag -> HierarchyZipper -> StoreOp (Maybe (Ref HistoryTag))
   attemptUpdate head refZipper = do
     (hist, headZipper) <- hierarchyZipperFromHistoryRef head
-    comp <- comparePaths headZipper refZipper
-    if comp then do
+    if comparePaths headZipper refZipper then do
       hist' <- makeUpdate hist headZipper
       result <- updateHead head hist'
       if result then
@@ -487,6 +481,29 @@ updateHierarchy meta parts json ref = do
     z <- makeHierarchyZipper hier
     z' <- followPath parts z
     return (hist, z')
+
+  -- Beware, this is a really conservative check.
+  comparePaths :: HierarchyZipper -> HierarchyZipper -> Bool
+  comparePaths (HierarchyZipper (HierarchyCtx ctxa) hiera) (HierarchyZipper (HierarchyCtx ctxb) hierb) =
+    compareTreeNodes hiera hierb &&
+    (not $ any (\((namea, tablea, jsona), (nameb, tableb, jsonb)) ->
+      namea == nameb &&
+      jsona == jsonb &&
+      compareHashMaps compareHierarchies tablea tableb) $ zip ctxa ctxb)
+
+  compareTreeNodes :: TreeNode JSON' Text Hierarchy -> TreeNode JSON' Text Hierarchy -> Bool
+  compareTreeNodes (TreeNode itemsa jsona) (TreeNode itemsb jsonb) =
+    jsona == jsonb &&
+    compareHashMaps compareHierarchies itemsa itemsb
+
+  compareHierarchies :: Hierarchy -> Hierarchy -> Bool
+  compareHierarchies (Mu (Left a)) (Mu (Left b)) = a == b
+  compareHierarchies _ _ = False
+
+  compareHashMaps :: (Eq k, Hashable k) => (a -> b -> Bool) -> HashMap k a -> HashMap k b -> Bool
+  compareHashMaps f a b =
+    HashSet.fromList (HashMap.keys a) == HashSet.fromList (HashMap.keys b) &&
+    (not $ any (\(k, v) -> not $ f v (fromJust (HashMap.lookup k b))) (HashMap.toList a))
 
 site :: Zoo.ZHandle -> Snap ()
 site zk =
