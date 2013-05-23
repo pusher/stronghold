@@ -9,7 +9,9 @@ import qualified Data.Text as Text
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
 import qualified Data.Aeson as Aeson
 import Data.Serialize
-import Data.HashMap.Strict (unionWith)
+import Data.HashMap.Strict (HashMap, unionWith)
+import qualified Data.HashMap.Strict as HashMap
+import Data.Hashable (Hashable)
 
 import Control.Applicative
 import Control.Monad
@@ -58,7 +60,7 @@ instance TagClass HierarchyTag where
 instance TagClass HistoryTag where
   tag = HistoryTag'
 
-data TreeNode x k v = TreeNode [(k, v)] x
+data TreeNode x k v = TreeNode (HashMap k v) x
 data ListNode x r = Nil | Cons x r
 
 data Data :: Tag -> * where
@@ -84,7 +86,11 @@ instance Serialize (Ref t) where
   put (Ref x) = put x
   get = Ref <$> get
 
-instance (Serialize k, Serialize v, Serialize x) => Serialize (TreeNode x k v) where
+instance (Eq k, Hashable k, Serialize k, Serialize v) => Serialize (HashMap k v) where
+  put = put . HashMap.toList
+  get = HashMap.fromList <$> get
+
+instance (Eq k, Hashable k, Serialize k, Serialize v, Serialize x) => Serialize (TreeNode x k v) where
   put (TreeNode l x) = put (l, x)
   get = (\(l, x) -> TreeNode l x) <$> get
 
@@ -245,7 +251,7 @@ storeHierarchy :: Hierarchy -> StoreOp (Ref HierarchyTag)
 storeHierarchy (Mu (Left x)) = return x
 storeHierarchy (Mu (Right (TreeNode l json))) = do
   json' <- storeJSON json
-  l' <- mapM (\(k, v) -> (,) k <$> storeHierarchy v) l
+  l' <- HashMap.fromList <$> mapM (\(k, v) -> (,) k <$> storeHierarchy v) (HashMap.toList l)
   store $ HierarchyNode (TreeNode l' json')
 
 storeHistory :: History -> StoreOp (Ref HistoryTag)
@@ -288,27 +294,32 @@ derefHierarchy :: Hierarchy -> StoreOp (TreeNode JSON' Text Hierarchy)
 derefHierarchy (Mu (Right x)) = return x
 derefHierarchy (Mu (Left r)) = do
   HierarchyNode (TreeNode l json) <- load r
-  return $ TreeNode (map (\(k, v) -> (k, Mu (Left v))) l) (Left json)
+  return $ TreeNode (HashMap.map (\v -> Mu (Left v)) l) (Left json)
 
-data HierarchyCtx = HierarchyCtx [(Text, [(Text, Hierarchy)], JSON')]
+anyM :: Monad m => (a -> m Bool) -> [a] -> m Bool
+anyM _ [] = return False
+anyM f (x:xs) = do
+  b <- f x
+  if b then
+    return True
+   else
+    anyM f xs
+
+compareHierarchies :: Hierarchy -> Hierarchy -> StoreOp Bool
+compareHierarchies (Mu (Left a)) (Mu (Left b)) = return $ a == b
+compareHierarchies (Mu (Right a)) (Mu (Right b)) = undefined
+
+data HierarchyCtx = HierarchyCtx [(Text, HashMap Text Hierarchy, JSON')]
 data HierarchyZipper = HierarchyZipper HierarchyCtx (TreeNode JSON' Text Hierarchy)
 
 makeHierarchyZipper :: Hierarchy -> StoreOp HierarchyZipper
 makeHierarchyZipper hier = HierarchyZipper (HierarchyCtx []) <$> derefHierarchy hier
 
-delete :: Eq k => k -> [(k, v)] -> [(k, v)]
-delete _ [] = []
-delete k1 ((k2, v):xs) =
-  if k1 == k2 then
-    xs
-  else
-    delete k1 xs
-
 down :: Text -> HierarchyZipper -> StoreOp HierarchyZipper
 down key (HierarchyZipper (HierarchyCtx hierCtx) (TreeNode children json)) =
-  let hierCtx' = HierarchyCtx ((key, delete key children, json):hierCtx)
-      def = return $ TreeNode [] (refJSON (Aeson.object [])) in
-        HierarchyZipper hierCtx' <$> maybe def derefHierarchy (lookup key children)
+  let hierCtx' = HierarchyCtx ((key, HashMap.delete key children, json):hierCtx)
+      def = return $ TreeNode HashMap.empty (refJSON (Aeson.object [])) in
+        HierarchyZipper hierCtx' <$> maybe def derefHierarchy (HashMap.lookup key children)
 
 followPath :: [Text] -> HierarchyZipper -> StoreOp HierarchyZipper
 followPath = flip (foldM (flip down))
@@ -317,10 +328,10 @@ up :: HierarchyZipper -> HierarchyZipper
 up z@(HierarchyZipper (HierarchyCtx []) _) = z
 up (HierarchyZipper (HierarchyCtx ((key, children', json'):xs)) hier@(TreeNode children json)) =
   HierarchyZipper (HierarchyCtx xs) $
-    if null children && emptyObject' json then do
+    if HashMap.null children && emptyObject' json then do
       (TreeNode children' json')
     else
-      (TreeNode ((key, refHierarchy hier):children') json')
+      (TreeNode (HashMap.insert key (refHierarchy hier) children') json')
 
 isTop :: HierarchyZipper -> Bool
 isTop (HierarchyZipper (HierarchyCtx x) _) = null x
@@ -345,7 +356,7 @@ setJSON' json' (HierarchyZipper hierCtx (TreeNode children _)) =
   HierarchyZipper hierCtx (TreeNode children json')
 
 children :: HierarchyZipper -> [Text]
-children (HierarchyZipper _ (TreeNode children _)) = map fst children
+children (HierarchyZipper _ (TreeNode children _)) = HashMap.keys children
 
 solidifyHierarchyZipper :: HierarchyZipper -> Hierarchy
 solidifyHierarchyZipper hier =
@@ -359,8 +370,8 @@ subPaths z =
     paths <- subPaths z'
     return (map (\i -> Text.concat ["/", child, i]) paths)) (children z)
 
-comparePaths :: HierarchyZipper -> HierarchyZipper -> Bool
-comparePaths = undefined
+comparePaths :: HierarchyZipper -> HierarchyZipper -> StoreOp Bool
+comparePaths (HierarchyZipper ctx1 hier1) (HierarchyZipper ctx2 hier2) = undefined
 
 data HistoryCtx = HistoryCtx History [(MetaInfo, Hierarchy)]
 data HistoryZipper = HistoryZipper HistoryCtx MetaInfo Hierarchy
@@ -407,7 +418,7 @@ solidifyHistory z =
 
 emptyHierarchy :: Hierarchy
 emptyHierarchy =
-  refHierarchy (TreeNode [] (refJSON (Aeson.object [])))
+  refHierarchy (TreeNode HashMap.empty (refJSON (Aeson.object [])))
 
 lastHierarchy :: History -> StoreOp Hierarchy
 lastHierarchy hist = do
@@ -450,7 +461,8 @@ updateHierarchy meta parts json ref = do
   attemptUpdate :: Ref HistoryTag -> HierarchyZipper -> StoreOp (Maybe (Ref HistoryTag))
   attemptUpdate head refZipper = do
     (hist, headZipper) <- hierarchyZipperFromHistoryRef head
-    if comparePaths headZipper refZipper then do
+    comp <- comparePaths headZipper refZipper
+    if comp then do
       hist' <- makeUpdate hist headZipper
       result <- updateHead head hist'
       if result then
