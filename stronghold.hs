@@ -30,14 +30,16 @@ import qualified Zookeeper as Zoo
 
 type JSON = Aeson.Value
 
-type Comment = Text
-type Author = Text
 type Timestamp = ()
 
-data MetaInfo = MetaInfo Timestamp Comment Author
+data MetaInfo = MetaInfo Timestamp Text Text -- timestamp, comment, author
 
 instance Aeson.ToJSON MetaInfo where
-  toJSON (MetaInfo ts comment author) = Aeson.object []
+  toJSON (MetaInfo ts comment author) =
+    Aeson.object [
+      ("comment", Aeson.String comment),
+      ("author", Aeson.String author)
+    ]
 
 data Tag =
   JSONTag |
@@ -595,14 +597,33 @@ site zk =
       return json
     writeLBS $ Aeson.encode json
 
+  resultToMaybe :: Aeson.Result x -> Maybe x
+  resultToMaybe (Aeson.Success x) = Just x
+  resultToMaybe _ = Nothing
+
+  jsonLookupText :: Text -> Aeson.Object -> Maybe Text
+  jsonLookupText key obj = do
+    field <- HashMap.lookup key obj
+    resultToMaybe $ Aeson.fromJSON field
+
+  retrieveUpdateInfo :: JSON -> Maybe (Text, Text, JSON)
+  retrieveUpdateInfo val = do
+    obj <- resultToMaybe $ Aeson.fromJSON val
+    author <- jsonLookupText "author" obj
+    comment <- jsonLookupText "comment" obj
+    dat <- HashMap.lookup "dat" obj
+    return (author, comment, dat)
+
   update :: Ref HistoryTag -> Snap ()
   update ref = method POST $ do
     path <- rqPathInfo <$> getRequest
     let parts = Text.splitOn "/" (decodeUtf8 path)
     body <- readRequestBody 102400
     body' <- maybe (fail "couldn't parse body") return (Aeson.decode body)
-    let meta = MetaInfo () "" ""
-    result <- liftIO $ runStoreOp zk $ updateHierarchy meta parts body' ref
+    let info = retrieveUpdateInfo body'
+    (author, comment, dat) <- maybe (fail "JSON didn't have the correct form") return info
+    let meta = MetaInfo () author comment
+    result <- liftIO $ runStoreOp zk $ updateHierarchy meta parts dat ref
     case result of
       Just _ -> do
         -- send a 200, maybe even send the new version ref
