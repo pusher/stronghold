@@ -32,13 +32,12 @@ type JSON = Aeson.Value
 
 type Comment = Text
 type Author = Text
-type ChangeSet = ()
 type Timestamp = ()
 
-data MetaInfo = MetaInfo Timestamp Comment Author ChangeSet
+data MetaInfo = MetaInfo Timestamp Comment Author
 
 instance Aeson.ToJSON MetaInfo where
-  toJSON (MetaInfo ts comment author changeset) = Aeson.object []
+  toJSON (MetaInfo ts comment author) = Aeson.object []
 
 data Tag =
   JSONTag |
@@ -116,8 +115,8 @@ instance (Serialize x, Serialize r) => Serialize (ListNode x r) where
       fail "unknown listnode type"
 
 instance Serialize MetaInfo where
-  put (MetaInfo a b c d) = put (a, b, c, d)
-  get = (\(a, b, c, d) -> MetaInfo a b c d) <$> get
+  put (MetaInfo a b c) = put (a, b, c)
+  get = (\(a, b, c) -> MetaInfo a b c) <$> get
 
 instance TagClass t => Serialize (Data t) where
   put (JSONData json) = do
@@ -611,7 +610,7 @@ site zk =
     let parts = Text.splitOn "/" (decodeUtf8 path)
     body <- readRequestBody 102400
     body' <- maybe (fail "couldn't parse body") return (Aeson.decode body)
-    let meta = MetaInfo () "" "" ()
+    let meta = MetaInfo () "" ""
     result <- liftIO $ runStoreOp zk $ updateHierarchy meta parts body' ref
     case result of
       Just _ -> do
