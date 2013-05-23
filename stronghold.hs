@@ -359,6 +359,9 @@ subPaths z =
     paths <- subPaths z'
     return (map (\i -> Text.concat ["/", child, i]) paths)) (children z)
 
+comparePaths :: HierarchyZipper -> HierarchyZipper -> Bool
+comparePaths = undefined
+
 data HistoryCtx = HistoryCtx History [(MetaInfo, Hierarchy)]
 data HistoryZipper = HistoryZipper HistoryCtx MetaInfo Hierarchy
 
@@ -426,6 +429,52 @@ addHistory meta hier hist = refHistory (Cons (meta, hier) hist)
 deepMerge :: JSON -> JSON -> JSON
 deepMerge (Aeson.Object a) (Aeson.Object b) = Aeson.Object $ unionWith deepMerge a b
 deepMerge _ x = x
+
+updateHierarchy :: MetaInfo -> [Text] -> JSON -> Ref HistoryTag -> StoreOp (Maybe (Ref HistoryTag))
+updateHierarchy meta parts json ref = do
+  head <- getHead
+  if head == ref then do
+    (hist, headZipper) <- hierarchyZipperFromHistoryRef head
+    hist' <- makeUpdate hist headZipper
+    result <- updateHead head hist'
+    if result then
+      return (Just hist')
+     else do
+      head <- getHead
+      (_, refZipper) <- hierarchyZipperFromHistoryRef ref
+      attemptUpdate head refZipper
+   else do
+    (_, refZipper) <- hierarchyZipperFromHistoryRef ref
+    attemptUpdate head refZipper
+ where
+  attemptUpdate :: Ref HistoryTag -> HierarchyZipper -> StoreOp (Maybe (Ref HistoryTag))
+  attemptUpdate head refZipper = do
+    (hist, headZipper) <- hierarchyZipperFromHistoryRef head
+    if comparePaths headZipper refZipper then do
+      hist' <- makeUpdate hist headZipper
+      result <- updateHead head hist'
+      if result then
+        return (Just hist')
+       else do
+        head <- getHead
+        attemptUpdate head refZipper
+     else
+      return Nothing
+
+  makeUpdate :: History -> HierarchyZipper -> StoreOp (Ref HistoryTag)
+  makeUpdate hist headZipper = do
+    let headZipper' = setJSON' (refJSON json) headZipper
+    let hier = solidifyHierarchyZipper headZipper'
+    let hist' = addHistory meta hier hist
+    storeHistory hist'
+
+  hierarchyZipperFromHistoryRef :: Ref HistoryTag -> StoreOp (History, HierarchyZipper)
+  hierarchyZipperFromHistoryRef ref = do
+    let hist = makeHistoryTree ref
+    hier <- lastHierarchy hist
+    z <- makeHierarchyZipper hier
+    z' <- followPath parts z
+    return (hist, z')
 
 site :: Zoo.ZHandle -> Snap ()
 site zk =
@@ -513,7 +562,7 @@ site zk =
         z'' <- down b z'
         (_, json) <- getJSON z''
         return (z'', json:l)) (z, [json]) parts
-    writeLBS $ Aeson.encode $ foldl1 deepMerge jsons
+    writeLBS $ Aeson.encode $ foldl1 deepMerge $ reverse jsons
 
   peculiar :: History -> Snap ()
   peculiar hist = method GET $ do
@@ -533,30 +582,15 @@ site zk =
     let parts = Text.splitOn "/" (decodeUtf8 path)
     body <- readRequestBody 102400
     body' <- maybe (fail "couldn't parse body") return (Aeson.decode body)
-    success <- liftIO $ runStoreOp zk $ do
-      head <- getHead
-      -- This is the wrong way to decide whether to attempt an update.
-      -- it should compare the hashes of the JSONs on the path to the node and 
-      -- the hash of the node itself.
-      if ref == head then do
-        let hist = makeHistoryTree head
-        hier <- lastHierarchy hist
-        z <- makeHierarchyZipper hier
-        z' <- followPath parts z
-        let z'' = setJSON' (refJSON body') z'
-        let hier' = solidifyHierarchyZipper z''
-        let meta = MetaInfo () "" "" () -- FIXME
-        let hist' = addHistory meta hier' hist
-        head' <- storeHistory hist'
-        updateHead head head'
-       else
-        return False
-    if success then
-      -- send a 200, maybe even send the new version ref
-      writeBS "OK"
-     else
-      -- TODO: send the error back properly
-      writeBS "ERR"
+    let meta = MetaInfo () "" "" ()
+    result <- liftIO $ runStoreOp zk $ updateHierarchy meta parts body' ref
+    case result of
+      Just _ -> do
+        -- send a 200, maybe even send the new version ref
+        writeBS "OK"
+      Nothing -> do
+        -- TODO: send the error back properly
+        writeBS "ERR"
 
 watcher :: Zoo.ZHandle -> Zoo.EventType -> Zoo.State -> String -> IO ()
 watcher _zh zEventType zState path =
