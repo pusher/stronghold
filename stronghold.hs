@@ -624,7 +624,8 @@ site zk =
     obj <- resultToMaybe $ Aeson.fromJSON val
     author <- jsonLookupText "author" obj
     comment <- jsonLookupText "comment" obj
-    dat <- HashMap.lookup "dat" obj
+    dat <- HashMap.lookup "data" obj
+    Aeson.Object _ <- resultToMaybe $ Aeson.fromJSON dat -- make sure that data is an object
     return (author, comment, dat)
 
   update :: Ref HistoryTag -> Snap ()
@@ -636,7 +637,7 @@ site zk =
     let info = retrieveUpdateInfo body'
     (author, comment, dat) <- maybe (fail "JSON didn't have the correct form") return info
     ts <- liftIO $ getCurrentTime
-    let meta = MetaInfo ts author comment
+    let meta = MetaInfo ts comment author
     result <- liftIO $ runStoreOp zk $ updateHierarchy meta parts dat ref
     case result of
       Just _ -> do
