@@ -488,14 +488,14 @@ updateHierarchy meta parts json ref = do
     return (hist, z')
 
   -- This is comparing two HierarchyZippers that are expected to be the result 
-  -- of "down key" on a reference.
+  -- of "followPath path" on a reference.
+  -- This comparison is specific to updateHierarchy, think twice before using 
+  -- it more generally.
   comparePaths :: HierarchyZipper -> HierarchyZipper -> Bool
   comparePaths (HierarchyZipper (HierarchyCtx ctxa) hiera) (HierarchyZipper (HierarchyCtx ctxb) hierb) =
     compareTreeNodes hiera hierb &&
-    (not $ any (\((namea, tablea, jsona), (nameb, tableb, jsonb)) ->
-      namea == nameb &&
-      jsona == jsonb &&
-      compareHashMaps compareHierarchies tablea tableb) $ zip ctxa ctxb)
+    (not $ any (\((namea, _, jsona), (nameb, _, jsonb)) ->
+      not (namea == nameb && jsona == jsonb)) $ zip ctxa ctxb)
 
   compareTreeNodes :: TreeNode JSON' Text Hierarchy -> TreeNode JSON' Text Hierarchy -> Bool
   compareTreeNodes (TreeNode itemsa jsona) (TreeNode itemsb jsonb) =
@@ -668,7 +668,7 @@ site zk =
             let meta = MetaInfo ts comment author
             result <- liftIO $ runStoreOp zk $ updateHierarchy meta parts dat ref
             case result of
-              Just (Ref head) -> writeBS head
+              Just (Ref head) -> writeBS (Base16.encode head)
               Nothing ->
                 sendError Conflict "The update was aborted because an ancestor or descendent has changed"
 
