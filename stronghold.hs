@@ -487,7 +487,8 @@ updateHierarchy meta parts json ref = do
     z' <- followPath parts z
     return (hist, z')
 
-  -- Beware, this is a really conservative check.
+  -- This is comparing two HierarchyZippers that are expected to be the result 
+  -- of "down key" on a reference.
   comparePaths :: HierarchyZipper -> HierarchyZipper -> Bool
   comparePaths (HierarchyZipper (HierarchyCtx ctxa) hiera) (HierarchyZipper (HierarchyCtx ctxb) hierb) =
     compareTreeNodes hiera hierb &&
