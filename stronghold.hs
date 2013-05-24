@@ -511,6 +511,27 @@ updateHierarchy meta parts json ref = do
     HashSet.fromList (HashMap.keys a) == HashSet.fromList (HashMap.keys b) &&
     (not $ any (\(k, v) -> not $ f v (fromJust (HashMap.lookup k b))) (HashMap.toList a))
 
+data HTTPStatus =
+  BadRequest |
+  Conflict |
+  UnprocessableEntity
+
+errorCode :: HTTPStatus -> Int
+errorCode BadRequest = 400
+errorCode Conflict = 409
+errorCode UnprocessableEntity = 422
+
+errorMessage :: HTTPStatus -> ByteString
+errorMessage BadRequest = "Bad Request"
+errorMessage Conflict = "Conflict"
+errorMessage UnprocessableEntity = "Unprocessable Entity"
+
+sendError :: HTTPStatus -> Text -> Snap ()
+sendError status body = do
+  modifyResponse $ setResponseStatus (errorCode status) (errorMessage status)
+  writeText body
+  writeText "\n"
+
 site :: Zoo.ZHandle -> Snap ()
 site zk =
   ifTop (writeBS "Stronghold say hi") <|>
@@ -536,7 +557,7 @@ site zk =
             ("peculiar/", peculiar hist),
             ("update/", update ref')
            ]
-      Nothing -> writeBS "failed, invalid reference" -- TODO: fail properly
+      Nothing -> sendError UnprocessableEntity "Invalid reference"
 
   fetchHead :: Snap ()
   fetchHead = ifTop $ method GET $ do
@@ -583,6 +604,7 @@ site zk =
   info :: History -> Snap ()
   info hist = ifTop $ method GET $ do
     meta <- liftIO $ runStoreOp zk $ lastMetaInfo hist
+    -- TODO: include the previous reference
     writeLBS $ Aeson.encode meta
 
   materialized :: History -> Snap ()
@@ -634,19 +656,21 @@ site zk =
     path <- rqPathInfo <$> getRequest
     let parts = Text.splitOn "/" (decodeUtf8 path)
     body <- readRequestBody 102400
-    body' <- maybe (fail "couldn't parse body") return (Aeson.decode body)
-    let info = retrieveUpdateInfo body'
-    (author, comment, dat) <- maybe (fail "JSON didn't have the correct form") return info
-    ts <- liftIO $ getCurrentTime
-    let meta = MetaInfo ts comment author
-    result <- liftIO $ runStoreOp zk $ updateHierarchy meta parts dat ref
-    case result of
-      Just _ -> do
-        -- send a 200, maybe even send the new version ref
-        writeBS "OK"
-      Nothing -> do
-        -- TODO: send the error back properly
-        writeBS "ERR"
+    case Aeson.decode body of
+      Nothing ->
+        sendError BadRequest "Invalid JSON"
+      Just body' ->
+        case retrieveUpdateInfo body' of
+          Nothing ->
+            sendError UnprocessableEntity "The given JSON should contain: author, comment, data"
+          Just (author, comment, dat) -> do
+            ts <- liftIO $ getCurrentTime
+            let meta = MetaInfo ts comment author
+            result <- liftIO $ runStoreOp zk $ updateHierarchy meta parts dat ref
+            case result of
+              Just (Ref head) -> writeBS head
+              Nothing ->
+                sendError Conflict "The update was aborted because an ancestor or descendent has changed"
 
 watcher :: Zoo.ZHandle -> Zoo.EventType -> Zoo.State -> String -> IO ()
 watcher _zh zEventType zState path =
