@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, EmptyDataDecls, DataKinds, KindSignatures, OverloadedStrings, ScopedTypeVariables #-}
+{-# LANGUAGE GADTs, DataKinds, KindSignatures, OverloadedStrings, ScopedTypeVariables #-}
 module Main where
 
 import Data.Maybe (fromJust)
@@ -14,6 +14,8 @@ import Data.HashMap.Strict (HashMap, unionWith)
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.HashSet as HashSet
 import Data.Hashable (Hashable)
+import Data.Time.Clock
+import Data.Time.Calendar
 
 import Control.Applicative
 import Control.Monad
@@ -30,13 +32,12 @@ import qualified Zookeeper as Zoo
 
 type JSON = Aeson.Value
 
-type Timestamp = ()
-
-data MetaInfo = MetaInfo Timestamp Text Text -- timestamp, comment, author
+data MetaInfo = MetaInfo UTCTime Text Text -- timestamp, comment, author
 
 instance Aeson.ToJSON MetaInfo where
   toJSON (MetaInfo ts comment author) =
     Aeson.object [
+      ("timestamp", Aeson.toJSON ts),
       ("comment", Aeson.String comment),
       ("author", Aeson.String author)
     ]
@@ -80,6 +81,18 @@ data Ref :: Tag -> * where
 
 instance Eq (Ref t) where
   (Ref a) == (Ref b) = a == b
+
+instance Serialize UTCTime where 
+    get = uncurry UTCTime <$> get
+    put (UTCTime day time) = put (day, time)
+
+instance Serialize Day where
+    get = ModifiedJulianDay <$> get
+    put = put . toModifiedJulianDay
+
+instance Serialize DiffTime where 
+    get = fromRational <$> get
+    put = put . toRational
 
 instance Serialize Aeson.Value where
   put = put . Aeson.encode
@@ -622,7 +635,8 @@ site zk =
     body' <- maybe (fail "couldn't parse body") return (Aeson.decode body)
     let info = retrieveUpdateInfo body'
     (author, comment, dat) <- maybe (fail "JSON didn't have the correct form") return info
-    let meta = MetaInfo () author comment
+    ts <- liftIO $ getCurrentTime
+    let meta = MetaInfo ts author comment
     result <- liftIO $ runStoreOp zk $ updateHierarchy meta parts dat ref
     case result of
       Just _ -> do
