@@ -3,6 +3,7 @@ module Main where
 
 import Data.Maybe (fromJust)
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as B
 import qualified Data.ByteString.Base16 as Base16
 import qualified Data.ByteString.Char8 as BC
 import Data.Text (Text)
@@ -189,13 +190,21 @@ updateHead prev next = singleton $ UpdateHead prev next
 createRef :: ByteString -> StoreOp (Maybe (Ref HistoryTag))
 createRef = singleton . CreateRef
 
+isErrNodeExists :: Zoo.ZooError -> Bool
+isErrNodeExists (Zoo.ErrNodeExists _) = True
+isErrNodeExists _ = False
+
+isErrNoNode :: Zoo.ZooError -> Bool
+isErrNoNode (Zoo.ErrNoNode _) = True
+isErrNoNode _ = False
+
 getZkPath :: ByteString -> String
 getZkPath = ("/ref/" ++) . BC.unpack . Base16.encode
 
 fetchRef :: Zoo.ZHandle -> ByteString -> IO (Maybe ByteString)
 fetchRef zk ref = do
-  (dat, _) <- Zoo.get zk (getZkPath ref) Zoo.NoWatch
-  return dat
+  result <- tryJust (guard . isErrNoNode) (Zoo.get zk (getZkPath ref) Zoo.NoWatch)
+  return (either (const Nothing) fst result)
 
 isRight :: Either a b -> Bool
 isRight (Right _) = True
@@ -203,10 +212,6 @@ isRight _ = False
 
 validHistoryNode :: ByteString -> Bool
 validHistoryNode s = isRight (decode s :: Either String (Data HistoryTag))
-
-isErrNodeExists :: Zoo.ZooError -> Bool
-isErrNodeExists (Zoo.ErrNodeExists _) = True
-isErrNodeExists _ = False
 
 -- It should be possible to run a store operation
 runStoreOp :: Zoo.ZHandle -> StoreOp a -> IO a
@@ -235,13 +240,16 @@ runStoreOp zk op =
         runStoreOp zk (rest True)
        else
         runStoreOp zk (rest False)
-    (CreateRef r) :>>= rest -> do
-      let (r', _) = Base16.decode r
-      dat <- fetchRef zk r'
-      if maybe False validHistoryNode dat then
-        runStoreOp zk (rest (Just (Ref r')))
-       else
-        runStoreOp zk (rest Nothing)
+    (CreateRef r) :>>= rest ->
+      let (r', _) = Base16.decode r in
+        if B.null r' then
+          runStoreOp zk $ rest Nothing
+         else do
+          dat <- fetchRef zk r'
+          if maybe False validHistoryNode dat then
+            runStoreOp zk (rest (Just (Ref r')))
+           else
+            runStoreOp zk (rest Nothing)
 
 -- This is a little tricky, if you're having difficulty understanding, read up 
 -- on fixed point combinators and fixed point types.
