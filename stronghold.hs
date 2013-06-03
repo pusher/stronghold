@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, DataKinds, KindSignatures, OverloadedStrings, ScopedTypeVariables #-}
+{-# LANGUAGE DataKinds, OverloadedStrings #-}
 module Main where
 
 {-
