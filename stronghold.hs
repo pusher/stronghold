@@ -1,30 +1,21 @@
 {-# LANGUAGE GADTs, DataKinds, KindSignatures, OverloadedStrings, ScopedTypeVariables #-}
 module Main where
 
-import Data.Monoid
+import Data.Monoid (mempty)
 import Data.Maybe (fromJust)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
 import qualified Data.ByteString.Base16 as Base16
-import qualified Data.ByteString.Char8 as BC
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Text.Encoding (encodeUtf8, decodeUtf8)
+import Data.Text.Encoding (decodeUtf8)
 import qualified Data.Aeson as Aeson
-import Data.Serialize
-import Data.HashMap.Strict (HashMap, unionWith)
 import qualified Data.HashMap.Strict as HashMap
-import qualified Data.HashSet as HashSet
-import Data.Hashable (Hashable)
-import Data.Time.Clock
-import Data.Time.Calendar
+import Data.Time.Clock (getCurrentTime)
 
-import Control.Applicative
-import Control.Monad
-import Control.Monad.IO.Class
-import Control.Monad.Operational
+import Control.Applicative ((<$>), (<|>))
+import Control.Monad (foldM)
+import Control.Monad.IO.Class (liftIO)
 import Control.Exception (tryJust)
-import Control.Concurrent.Async
 
 import Snap.Core
 import Snap.Http.Server

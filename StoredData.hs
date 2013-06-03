@@ -1,30 +1,24 @@
 {-# LANGUAGE GADTs, DataKinds, KindSignatures, OverloadedStrings, ScopedTypeVariables #-}
 module StoredData where
 
-import Data.Monoid
 import Data.Maybe (fromJust)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Base16 as Base16
-import qualified Data.ByteString.Char8 as BC
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
 import qualified Data.Aeson as Aeson
-import Data.Serialize
+import Data.Serialize (Serialize, decode, encode, get, put, getBytes, putByteString)
 import Data.HashMap.Strict (HashMap, unionWith)
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.HashSet as HashSet
 import Data.Hashable (Hashable)
-import Data.Time.Clock
-import Data.Time.Calendar
+import Data.Time.Clock (UTCTime (UTCTime), DiffTime)
+import Data.Time.Calendar (Day (ModifiedJulianDay), toModifiedJulianDay)
 
-import Control.Applicative
-import Control.Monad
-import Control.Monad.IO.Class
-import Control.Monad.Operational
+import Control.Applicative ((<$>))
+import Control.Monad (foldM, when)
+import Control.Monad.Operational (ProgramViewT (..), singleton, view, Program)
 import Control.Exception (tryJust)
-import Control.Concurrent.Async
 
 import Crypto.Hash.SHA1 (hash)
 
