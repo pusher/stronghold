@@ -1,5 +1,10 @@
 module ZkInterface where
 
+{-
+  This module is a higher level interface for zookeeper, exposing only the 
+  operations that are pertinent to us.
+-}
+
 import Data.Maybe (isJust)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC

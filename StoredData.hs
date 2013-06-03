@@ -1,6 +1,11 @@
 {-# LANGUAGE GADTs, DataKinds, KindSignatures, OverloadedStrings, ScopedTypeVariables #-}
 module StoredData where
 
+{-
+  This module is responsible for logic for interacting with the data in
+  zookeeper.
+-}
+
 import Data.Maybe (fromJust)
 import Data.ByteString (ByteString)
 import Data.Text (Text)

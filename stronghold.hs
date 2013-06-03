@@ -1,6 +1,10 @@
 {-# LANGUAGE GADTs, DataKinds, KindSignatures, OverloadedStrings, ScopedTypeVariables #-}
 module Main where
 
+{-
+  This file should only define Stronghold's API.
+-}
+
 import Data.Monoid (mempty)
 import Data.Maybe (fromJust)
 import Data.ByteString (ByteString)
