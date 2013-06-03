@@ -1,6 +1,7 @@
 {-# LANGUAGE GADTs, DataKinds, KindSignatures, OverloadedStrings, ScopedTypeVariables #-}
 module Main where
 
+import Data.Monoid
 import Data.Maybe (fromJust)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
@@ -23,13 +24,16 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Operational
 import Control.Exception (tryJust)
+import Control.Concurrent.Async
 
 import Snap.Core
 import Snap.Http.Server
 
-import Crypto.Hash.SHA1
+import Crypto.Hash.SHA1 (hash)
 
-import qualified Zookeeper as Zoo
+import System.Environment (getArgs)
+
+import qualified ZkInterface as Zk
 
 type JSON = Aeson.Value
 
@@ -190,22 +194,6 @@ updateHead prev next = singleton $ UpdateHead prev next
 createRef :: ByteString -> StoreOp (Maybe (Ref HistoryTag))
 createRef = singleton . CreateRef
 
-isErrNodeExists :: Zoo.ZooError -> Bool
-isErrNodeExists (Zoo.ErrNodeExists _) = True
-isErrNodeExists _ = False
-
-isErrNoNode :: Zoo.ZooError -> Bool
-isErrNoNode (Zoo.ErrNoNode _) = True
-isErrNoNode _ = False
-
-getZkPath :: ByteString -> String
-getZkPath = ("/ref/" ++) . BC.unpack . Base16.encode
-
-fetchRef :: Zoo.ZHandle -> ByteString -> IO (Maybe ByteString)
-fetchRef zk ref = do
-  result <- tryJust (guard . isErrNoNode) (Zoo.get zk (getZkPath ref) Zoo.NoWatch)
-  return (either (const Nothing) fst result)
-
 isRight :: Either a b -> Bool
 isRight (Right _) = True
 isRight _ = False
@@ -214,42 +202,32 @@ validHistoryNode :: ByteString -> Bool
 validHistoryNode s = isRight (decode s :: Either String (Data HistoryTag))
 
 -- It should be possible to run a store operation
-runStoreOp :: Zoo.ZHandle -> StoreOp a -> IO a
+runStoreOp :: Zk.ZkInterface -> StoreOp a -> IO a
 runStoreOp zk op =
   case view op of
     Return x -> return x
     (Store d) :>>= rest -> do
       let d' = encode d
-      let h = hash d'
-      tryJust (guard . isErrNodeExists) $ Zoo.create zk (getZkPath h) (Just d') Zoo.OpenAclUnsafe (Zoo.CreateMode False False)
-      runStoreOp zk (rest (Ref h))
+      ref <- Zk.storeData zk d'
+      ref' <- maybe (fail "couldn't store node in zookeeper") return ref
+      runStoreOp zk (rest (Ref ref'))
     (Load (Ref r)) :>>= rest -> do
-      dat <- fetchRef zk r
+      dat <- Zk.loadData zk r
       dat' <- maybe (fail "no such ref") return dat
       either fail (runStoreOp zk . rest) (decode dat')
     GetHead :>>= rest -> do
-      (dat, _) <- Zoo.get zk "/head" Zoo.NoWatch
-      head <- maybe (fail "no head") return dat
-      runStoreOp zk (rest (Ref (fst (Base16.decode head))))
+      head <- Zk.getHead zk
+      head' <- maybe (fail "couldn't fetch head") return head
+      runStoreOp zk (rest (Ref head'))
     (UpdateHead (Ref old) (Ref new)) :>>= rest -> do
-      (dat, stat) <- Zoo.get zk "/head" Zoo.NoWatch
-      dat' <- maybe (fail "no head") return dat
-      if Base16.encode old == dat' then do
-        -- FIXME: exceptions here should be caught
-        result <- Zoo.set zk "/head" (Just (Base16.encode new)) (fromIntegral (Zoo.stat_version stat))
-        runStoreOp zk (rest True)
+      b <- Zk.updateHead zk old new
+      runStoreOp zk (rest b)
+    (CreateRef r) :>>= rest -> do
+      b <- Zk.hasReference zk r
+      if b then
+        runStoreOp zk (rest (Just (Ref r)))
        else
-        runStoreOp zk (rest False)
-    (CreateRef r) :>>= rest ->
-      let (r', _) = Base16.decode r in
-        if B.null r' then
-          runStoreOp zk $ rest Nothing
-         else do
-          dat <- fetchRef zk r'
-          if maybe False validHistoryNode dat then
-            runStoreOp zk (rest (Just (Ref r')))
-           else
-            runStoreOp zk (rest Nothing)
+        runStoreOp zk (rest (Nothing))
 
 -- This is a little tricky, if you're having difficulty understanding, read up 
 -- on fixed point combinators and fixed point types.
@@ -522,12 +500,14 @@ updateHierarchy meta parts json ref = do
 data HTTPStatus =
   BadRequest |
   Conflict |
-  UnprocessableEntity
+  UnprocessableEntity |
+  InternalServerError
 
 errorCode :: HTTPStatus -> Int
 errorCode BadRequest = 400
 errorCode Conflict = 409
 errorCode UnprocessableEntity = 422
+errorCode InternalServerError = 500
 
 errorMessage :: HTTPStatus -> ByteString
 errorMessage BadRequest = "Bad Request"
@@ -540,29 +520,28 @@ sendError status body = do
   writeText body
   writeText "\n"
 
-site :: Zoo.ZHandle -> Snap ()
+site :: Zk.ZkInterface -> Snap ()
 site zk =
   ifTop (writeBS "Stronghold say hi") <|>
   route [
     ("head", fetchHead),
-    ("at/:timestamp", fetchAtTimestamp),
-    (":version/", hasVersion)
+    ("versions", versions),
+    (":version/", withVersion)
    ]
  where
-  hasVersion :: Snap ()
-  hasVersion = do
+  withVersion :: Snap ()
+  withVersion = do
     Just version <- getParam "version"
     ref <- liftIO $ runStoreOp zk (createRef version)
     case ref of
       Just ref' ->
         let hist = makeHistoryTree ref' in
           route [
-            ("paths", paths hist),
-            ("changes", changes hist),
-            ("next", next hist),
-            ("info", info hist),
-            ("materialized/", materialized hist),
-            ("peculiar/", peculiar hist),
+            ("tree/paths", paths hist),
+            ("tree/materialized/", materialized hist),
+            ("tree/peculiar/", peculiar hist),
+            ("change", info hist),
+            ("next/tree/materialized", next hist),
             ("update/", update ref')
            ]
       Nothing -> sendError UnprocessableEntity "Invalid reference"
@@ -572,13 +551,9 @@ site zk =
     (Ref head) <- liftIO $ runStoreOp zk getHead
     writeBS (Base16.encode head)
 
-  fetchAtTimestamp :: Snap ()
-  fetchAtTimestamp = ifTop $ method GET $ do
-    Just ts <- getParam "timestamp"
-    -- construct a history zipper
-    -- walk back until you find a timestamp < ts
-    -- send back the reference
-    undefined
+  -- query the set of versions
+  versions :: Snap ()
+  versions = undefined
 
   paths :: History -> Snap ()
   paths hist = ifTop $ method GET $ do
@@ -590,14 +565,6 @@ site zk =
           z <- makeHierarchyZipper hier
           subPaths z
     writeLBS (Aeson.encode paths)
-
-  changes :: History -> Snap ()
-  changes hist = ifTop $ method GET $ do
-    -- get the maximum length
-    -- create a zipper
-    -- walk back until length, noting each metainfo.
-    -- send the result
-    undefined
 
   next :: History -> Snap ()
   next hist = ifTop $ method GET $ do
@@ -680,12 +647,8 @@ site zk =
               Nothing ->
                 sendError Conflict "The update was aborted because an ancestor or descendent has changed"
 
-watcher :: Zoo.ZHandle -> Zoo.EventType -> Zoo.State -> String -> IO ()
-watcher _zh zEventType zState path =
-  putStrLn ("watch: '" ++ path ++ "' :: " ++ show zEventType ++ " " ++ show zState)
-
 main :: IO ()
 main = do
-  let host_port = "localhost:2181"
-  zk <- Zoo.init host_port (Just watcher) 10000 -- last param is the timeout
-  quickHttpServe (site zk)
+  [portString] <- getArgs
+  zk <- Zk.newZkInterface "localhost:2181"
+  simpleHttpServe (setPort (read portString) mempty :: Config Snap ()) (site zk)
