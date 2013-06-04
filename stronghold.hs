@@ -30,6 +30,7 @@ import System.Environment (getArgs)
 
 import qualified ZkInterface as Zk
 import StoredData
+import Trees
 
 data HTTPStatus =
   BadRequest |
