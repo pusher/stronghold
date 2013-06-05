@@ -267,7 +267,7 @@ nextMaterializedView zk ref path = do
       (_, json) <- runStoreOp zk $ do
         hier <- hierarchyFromRevision ref
         materializedView path hier
-      foldM (\result revision ->
+      result <- foldM (\result revision ->
         case result of
           Just _ ->
             return result
@@ -279,6 +279,9 @@ nextMaterializedView zk ref path = do
                 return Nothing
                else
                 return (Just json')) Nothing revisions'
+      case result of
+        Nothing -> nextMaterializedView zk (makeRef head) path
+        Just _ -> return result
 
 updateHierarchy :: MetaInfo -> [Text] -> JSON -> Ref HistoryTag -> StoreOp (Maybe (Ref HistoryTag))
 updateHierarchy meta parts json ref = do
