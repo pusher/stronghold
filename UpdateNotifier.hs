@@ -21,12 +21,12 @@ import ZkInterface as Zk
 
 {-
   The job of an UpdateNotifier is to provide a way of being notified of
-  materializedViewd view updates.
+  materializedView view updates.
 
   The way that it works is, when you want to be alerted, you add a
   `TVar (Maybe JSON)` containing `Nothing` to a HashMap in another TVar. 
   A thread, that is started when the UpdateNotifier is created, waits for 
-  updates and when they occur, it computes the new materializedViewd for the paths 
+  updates and when they occur, it computes the new materializedView for the paths 
   in the HashMap. Where these have changed, the associated `TVar (Maybe JSON)`s
   are filled, otherwise they are migrated to the new HashMap.
 -}
@@ -41,7 +41,7 @@ newUpdateNotifier zk = do
   waiting <- newTVarIO Nothing
   forkIO $ forever $ do
     x <- atomically $ do
-      upstreamRef <- Ref <$> getHeadSTM zk
+      upstreamRef <- makeRef <$> getHeadSTM zk
       waiting' <- readTVar waiting
       case waiting' of
         Nothing -> do
@@ -112,7 +112,7 @@ newUpdateNotifier zk = do
 nextMaterializedView :: UpdateNotifier -> Ref HistoryTag -> [Text] -> IO (Async JSON)
 nextMaterializedView notifier@(UpdateNotifier zk waiting) ref path = do
   x <- atomically $ do
-    upstreamRef <- Ref <$> getHeadSTM zk
+    upstreamRef <- makeRef <$> getHeadSTM zk
     if upstreamRef == ref then do
       waiting' <- readTVar waiting
       case waiting' of
@@ -147,7 +147,7 @@ nextMaterializedView notifier@(UpdateNotifier zk waiting) ref path = do
                    else
                     return (Just json')) Nothing revisions'
       case result of
-        Just materializedViewd -> async $ return materializedViewd
+        Just materialized -> async $ return materialized
         Nothing -> nextMaterializedView notifier head path
     Right tvar ->
       async $ atomically $ readTVar tvar >>= maybe retry return

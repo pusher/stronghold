@@ -29,12 +29,12 @@ getHeadSTM :: ZkInterface -> STM ByteString
 getHeadSTM zk = tryGetHeadSTM zk >>= maybe retry return
 
 getHead :: ZkInterface -> IO (Maybe B.ByteString)
-getHead (ZkInterface head _) = readTVarIO head
+getHead (ZkInterface head _) = (readTVarIO head)
 
 fetchHeadAndWatch :: ZkInterface -> IO ()
 fetchHeadAndWatch (ZkInterface head zk) = do
   (dat, _) <- Zoo.get zk "/head" Zoo.Watch
-  atomically $ writeTVar head (fmap (fst . Base16.decode) dat)
+  atomically $ writeTVar head dat
 
 watcher :: ZkInterface -> Zoo.ZHandle -> Zoo.EventType -> Zoo.State -> String -> IO ()
 watcher zk _ Zoo.Changed _ "/head" = fetchHeadAndWatch zk
@@ -50,7 +50,7 @@ newZkInterface hostPort = do
   return interface
 
 getZkPath :: B.ByteString -> String
-getZkPath = ("/ref/" ++) . BC.unpack . Base16.encode
+getZkPath = ("/ref/" ++) . BC.unpack
 
 isErrNodeExists :: Zoo.ZooError -> Bool
 isErrNodeExists (Zoo.ErrNodeExists _) = True
@@ -66,35 +66,23 @@ loadData (ZkInterface _ zk) ref = do
   result <- tryJust (guard . isErrNoNode) (Zoo.get zk (getZkPath ref) Zoo.NoWatch)
   return (either (const Nothing) fst result)
 
-isRight :: Either a b -> Bool
-isRight (Right _) = True
-isRight _ = False
-
 storeData :: ZkInterface -> B.ByteString -> IO (Maybe B.ByteString)
 storeData (ZkInterface _ zk) d = do
-  let h = hash d
-  succeed <- isRight <$> (tryJust (guard . isErrNodeExists) $
-    Zoo.create zk (getZkPath h) (Just d) Zoo.OpenAclUnsafe (Zoo.CreateMode False False))
-  if succeed then
-    return (Just h)
-   else
-    return Nothing
+  let h = (Base16.encode . hash) d
+  tryJust (guard . isErrNodeExists) $
+    Zoo.create zk (getZkPath h) (Just d) Zoo.OpenAclUnsafe (Zoo.CreateMode False False)
+  return (Just h)
 
 hasReference :: ZkInterface -> B.ByteString -> IO Bool
-hasReference zk r =
-  let (r', _) = Base16.decode r in
-    if B.null r' then
-      return False
-     else
-      isJust <$> loadData zk r
+hasReference zk r = isJust <$> loadData zk r
 
 updateHead :: ZkInterface -> B.ByteString -> B.ByteString -> IO Bool
 updateHead (ZkInterface _ zk) old new = do
   (dat, stat) <- Zoo.get zk "/head" Zoo.NoWatch
   dat' <- maybe (fail "no head") return dat
-  if Base16.encode old == dat' then do
+  if old == dat' then do
     -- FIXME: exceptions here should be caught
-    result <- Zoo.set zk "/head" (Just (Base16.encode new)) (fromIntegral (Zoo.stat_version stat))
+    result <- Zoo.set zk "/head" (Just new) (fromIntegral (Zoo.stat_version stat))
     return True
    else
     return False

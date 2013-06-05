@@ -19,7 +19,7 @@ import Data.Time.Clock (getCurrentTime)
 import Control.Applicative ((<$>), (<|>))
 import Control.Monad (foldM)
 import Control.Monad.IO.Class (liftIO)
-import Control.Exception (tryJust)
+import Control.Exception (tryJust, try, SomeException)
 import Control.Concurrent.Async (wait)
 
 import Snap.Core
@@ -85,8 +85,8 @@ site zk notifier =
 
   fetchHead :: Snap ()
   fetchHead = ifTop $ method GET $ do
-    (Ref head) <- liftIO $ runStoreOp zk getHead
-    writeBS (Base16.encode head)
+    head <- liftIO $ runStoreOp zk getHead
+    writeBS (unref head)
 
   -- query the set of versions
   versions :: Snap ()
@@ -171,9 +171,9 @@ site zk notifier =
           Just (author, comment, dat) -> do
             ts <- liftIO $ getCurrentTime
             let meta = MetaInfo ts comment author
-            result <- liftIO $ runStoreOp zk $ updateHierarchy meta parts dat ref
+            result <- (liftIO $ runStoreOp zk $ updateHierarchy meta parts dat ref)
             case result of
-              Just (Ref head) -> writeBS (Base16.encode head)
+              Just head -> writeBS (unref head)
               Nothing ->
                 sendError Conflict "The update was aborted because an ancestor or descendent has changed"
 

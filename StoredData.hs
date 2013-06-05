@@ -7,6 +7,7 @@ module StoredData where
 -}
 
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Base16 as Base16
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
 import qualified Data.Aeson as Aeson
@@ -152,6 +153,12 @@ instance TagClass t => Serialize (Data t) where
         when (t /= "3") $ fail "expected history node tag"
         HistoryNode <$> get
 
+makeRef :: ByteString -> Ref t
+makeRef r = Ref ((fst . Base16.decode) r)
+
+unref :: Ref t -> ByteString
+unref (Ref r) = Base16.encode r
+
 emptyObjectHash :: ByteString
 emptyObjectHash = hash (encode (JSONData (Aeson.object [])))
 
@@ -198,23 +205,29 @@ runStoreOp zk op =
     Return x -> return x
     (Store d) :>>= rest -> do
       let d' = encode d
+--      print ("storing", d')
       ref <- Zk.storeData zk d'
       ref' <- maybe (fail "couldn't store node in zookeeper") return ref
-      runStoreOp zk (rest (Ref ref'))
-    (Load (Ref r)) :>>= rest -> do
-      dat <- Zk.loadData zk r
+      runStoreOp zk (rest (makeRef ref'))
+    (Load r) :>>= rest -> do
+--      print ("loading", (unref r))
+      dat <- Zk.loadData zk (unref r)
       dat' <- maybe (fail "no such ref") return dat
       either fail (runStoreOp zk . rest) (decode dat')
     GetHead :>>= rest -> do
+--      print "getting head"
       head <- Zk.getHead zk
       head' <- maybe (fail "couldn't fetch head") return head
-      runStoreOp zk (rest (Ref head'))
-    (UpdateHead (Ref old) (Ref new)) :>>= rest -> do
-      b <- Zk.updateHead zk old new
+      runStoreOp zk (rest (makeRef head'))
+    (UpdateHead old new) :>>= rest -> do
+--      print ("updating head", unref old, unref new)
+      b <- Zk.updateHead zk (unref old) (unref new)
+      print b
       runStoreOp zk (rest b)
     (CreateRef r) :>>= rest -> do
+--      print ("creating ref", r)
       b <- Zk.hasReference zk r
       if b then
-        runStoreOp zk (rest (Just (Ref r)))
+        runStoreOp zk (rest (Just (makeRef r)))
        else
         runStoreOp zk (rest (Nothing))
