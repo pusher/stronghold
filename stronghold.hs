@@ -20,6 +20,7 @@ import Control.Applicative ((<$>), (<|>))
 import Control.Monad (foldM)
 import Control.Monad.IO.Class (liftIO)
 import Control.Exception (tryJust)
+import Control.Concurrent.Async (wait)
 
 import Snap.Core
 import Snap.Http.Server
@@ -31,6 +32,7 @@ import System.Environment (getArgs)
 import qualified ZkInterface as Zk
 import StoredData
 import Trees
+import UpdateNotifier
 
 data HTTPStatus =
   BadRequest |
@@ -55,8 +57,8 @@ sendError status body = do
   writeText body
   writeText "\n"
 
-site :: Zk.ZkInterface -> Snap ()
-site zk =
+site :: Zk.ZkInterface -> UpdateNotifier -> Snap ()
+site zk notifier =
   ifTop (writeBS "Stronghold say hi") <|>
   route [
     ("head", fetchHead),
@@ -76,7 +78,7 @@ site zk =
             ("tree/materialized/", materialized hist),
             ("tree/peculiar/", peculiar hist),
             ("change", info hist),
-            ("next/tree/materialized", next hist),
+            ("next/tree/materialized", next ref'),
             ("update/", update ref')
            ]
       Nothing -> sendError UnprocessableEntity "Invalid reference"
@@ -101,15 +103,13 @@ site zk =
           subPaths z
     writeLBS (Aeson.encode paths)
 
-  next :: History -> Snap ()
-  next hist = ifTop $ method GET $ do
-    head <- liftIO $ runStoreOp zk $ getHead
-    -- hist should exist in the history of head
-    -- walk through head until hist is found
-    -- if hist == head then wait for a new version
-    -- otherwise walk forward one and send the reference
-    -- if hist doesn't exist in head, then send an error
-    undefined
+  next :: Ref HistoryTag -> Snap ()
+  next hist = method GET $ do
+    path <- rqPathInfo <$> getRequest
+    let parts = Text.splitOn "/" (decodeUtf8 path)
+    future <- liftIO $ nextMaterializedView notifier hist parts
+    json <- liftIO $ wait $ future
+    writeLBS $ Aeson.encode json
 
   info :: History -> Snap ()
   info hist = ifTop $ method GET $ do
@@ -121,15 +121,10 @@ site zk =
   materialized hist = method GET $ do
     path <- rqPathInfo <$> getRequest
     let parts = Text.splitOn "/" (decodeUtf8 path)
-    jsons <- liftIO $ runStoreOp zk $ do
+    json <- liftIO $ runStoreOp zk $ do
       hier <- lastHierarchy hist
-      z <- makeHierarchyZipper hier
-      (_, json) <- getJSON z
-      snd <$> foldM (\(z', l) b -> do
-        z'' <- down b z'
-        (_, json) <- getJSON z''
-        return (z'', json:l)) (z, [json]) parts
-    writeLBS $ Aeson.encode $ foldl1 deepMerge $ reverse jsons
+      snd <$> materializedView parts hier
+    writeLBS $ Aeson.encode $ json
 
   peculiar :: History -> Snap ()
   peculiar hist = method GET $ do
@@ -186,4 +181,5 @@ main :: IO ()
 main = do
   [portString] <- getArgs
   zk <- Zk.newZkInterface "localhost:2181"
-  simpleHttpServe (setPort (read portString) mempty :: Config Snap ()) (site zk)
+  notifier <- newUpdateNotifier zk
+  simpleHttpServe (setPort (read portString) mempty :: Config Snap ()) (site zk notifier)

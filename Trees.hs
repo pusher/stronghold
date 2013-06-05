@@ -153,13 +153,13 @@ subPaths z =
 data HistoryCtx = HistoryCtx History [(MetaInfo, Hierarchy)]
 data HistoryZipper = HistoryZipper HistoryCtx MetaInfo Hierarchy
 
-back :: HistoryZipper -> StoreOp HistoryZipper
+back :: HistoryZipper -> StoreOp (Maybe HistoryZipper)
 back (HistoryZipper (HistoryCtx l r) meta hier) = do
   l' <- derefHistory l
   return $ case l' of
-    Nil -> HistoryZipper (HistoryCtx (refHistory l') r) meta hier
+    Nil -> Nothing
     Cons (meta', hier') xs ->
-      HistoryZipper (HistoryCtx xs ((meta, hier):r)) meta' hier'
+      Just (HistoryZipper (HistoryCtx xs ((meta, hier):r)) meta' hier')
 
 forward :: HistoryZipper -> HistoryZipper
 forward z@(HistoryZipper (HistoryCtx l r) meta hier) = do
@@ -217,6 +217,33 @@ addHistory meta hier hist = refHistory (Cons (meta, hier) hist)
 deepMerge :: JSON -> JSON -> JSON
 deepMerge (Aeson.Object a) (Aeson.Object b) = Aeson.Object $ unionWith deepMerge a b
 deepMerge _ x = x
+
+-- from < x <= to
+revisionsBetween :: Ref HistoryTag -> Ref HistoryTag -> StoreOp (Maybe [Ref HistoryTag])
+revisionsBetween from to =
+  fmap (fmap reverse) (revisionsBetween from to)
+ where
+  revisionsBetween' :: Ref HistoryTag -> Ref HistoryTag -> StoreOp (Maybe [Ref HistoryTag])
+  revisionsBetween' from to = do
+    hist <- derefHistory (makeHistoryTree to)
+    case hist of
+      Nil -> return Nothing
+      Cons x (Mu (Left xs)) -> do
+        revisions <- revisionsBetween' from xs
+        return (fmap (to :) revisions)
+
+hierarchyFromRevision :: Ref HistoryTag -> StoreOp Hierarchy
+hierarchyFromRevision = lastHierarchy . makeHistoryTree
+
+materializedView :: [Text] -> Hierarchy -> StoreOp (Hierarchy, JSON)
+materializedView path hier = do
+  z <- makeHierarchyZipper hier
+  (z', json) <- getJSON z
+  (z'', jsons) <- foldM (\(z, l) label -> do
+    z' <- down label z
+    (z'', json) <- getJSON z'
+    return (z'', json:l)) (z', [json]) path
+  return (solidifyHierarchyZipper z'', foldl1 deepMerge $ reverse jsons)
 
 updateHierarchy :: MetaInfo -> [Text] -> JSON -> Ref HistoryTag -> StoreOp (Maybe (Ref HistoryTag))
 updateHierarchy meta parts json ref = do

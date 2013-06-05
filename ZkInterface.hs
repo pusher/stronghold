@@ -5,31 +5,48 @@ module ZkInterface where
   operations that are pertinent to us.
 -}
 
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, maybe)
+import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Base16 as Base16
 
-import Control.Applicative ((<$>))
+import Control.Applicative ((<$>), (<*>))
 import Control.Monad (guard, join)
 import Control.Exception (tryJust)
+import Control.Concurrent.STM (STM, atomically, retry, TVar, readTVar, writeTVar, newTVarIO, readTVarIO)
 
 import Crypto.Hash.SHA1 (hash)
 
 import qualified Zookeeper as Zoo
 
-data ZkInterface = ZkInterface !Zoo.ZHandle
+data ZkInterface = ZkInterface !(TVar (Maybe ByteString)) !Zoo.ZHandle
+
+tryGetHeadSTM :: ZkInterface -> STM (Maybe ByteString)
+tryGetHeadSTM (ZkInterface head _) = readTVar head
+
+getHeadSTM :: ZkInterface -> STM ByteString
+getHeadSTM zk = tryGetHeadSTM zk >>= maybe retry return
+
+getHead :: ZkInterface -> IO (Maybe B.ByteString)
+getHead (ZkInterface head _) = readTVarIO head
+
+fetchHeadAndWatch :: ZkInterface -> IO ()
+fetchHeadAndWatch (ZkInterface head zk) = do
+  (dat, _) <- Zoo.get zk "/head" Zoo.Watch
+  atomically $ writeTVar head (fmap (fst . Base16.decode) dat)
 
 watcher :: ZkInterface -> Zoo.ZHandle -> Zoo.EventType -> Zoo.State -> String -> IO ()
-watcher _ _ Zoo.Changed _ "/head" = print "head reference change"
+watcher zk _ Zoo.Changed _ "/head" = fetchHeadAndWatch zk
 watcher _ _ zEventType zState path =
   putStrLn ("watch: '" ++ path ++ "' :: " ++ show zEventType ++ " " ++ show zState)
 
 newZkInterface :: String -> IO ZkInterface
 newZkInterface hostPort = do
   zk <- Zoo.init hostPort Nothing 10000
-  let interface = ZkInterface zk
+  interface <- ZkInterface <$> newTVarIO Nothing <*> return zk
   Zoo.setWatcher zk (Just (watcher interface))
+  fetchHeadAndWatch interface
   return interface
 
 getZkPath :: B.ByteString -> String
@@ -45,7 +62,7 @@ isErrNoNode _ = False
 
 -- TODO: handle disconnected zookeeper
 loadData :: ZkInterface -> B.ByteString -> IO (Maybe B.ByteString)
-loadData (ZkInterface zk) ref = do
+loadData (ZkInterface _ zk) ref = do
   result <- tryJust (guard . isErrNoNode) (Zoo.get zk (getZkPath ref) Zoo.NoWatch)
   return (either (const Nothing) fst result)
 
@@ -54,7 +71,7 @@ isRight (Right _) = True
 isRight _ = False
 
 storeData :: ZkInterface -> B.ByteString -> IO (Maybe B.ByteString)
-storeData (ZkInterface zk) d = do
+storeData (ZkInterface _ zk) d = do
   let h = hash d
   succeed <- isRight <$> (tryJust (guard . isErrNodeExists) $
     Zoo.create zk (getZkPath h) (Just d) Zoo.OpenAclUnsafe (Zoo.CreateMode False False))
@@ -72,7 +89,7 @@ hasReference zk r =
       isJust <$> loadData zk r
 
 updateHead :: ZkInterface -> B.ByteString -> B.ByteString -> IO Bool
-updateHead (ZkInterface zk) old new = do
+updateHead (ZkInterface _ zk) old new = do
   (dat, stat) <- Zoo.get zk "/head" Zoo.NoWatch
   dat' <- maybe (fail "no head") return dat
   if Base16.encode old == dat' then do
@@ -81,9 +98,3 @@ updateHead (ZkInterface zk) old new = do
     return True
    else
     return False
-
-getHead :: ZkInterface -> IO (Maybe B.ByteString)
-getHead (ZkInterface zk) = do
-  (dat, _) <- Zoo.get zk "/head" Zoo.NoWatch
-  head <- maybe (fail "no head") return dat
-  return (Just (fst (Base16.decode head)))

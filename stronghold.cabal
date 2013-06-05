@@ -8,4 +8,4 @@ executable stronghold
   build-depends:       base ==4.6.*, operational, bytestring, text, aeson,
                        snap-server, snap-core, cereal, zookeeper, cryptohash,
                        base16-bytestring, transformers, unordered-containers,
-                       hashable, time, async
+                       hashable, time, async, stm, lens
