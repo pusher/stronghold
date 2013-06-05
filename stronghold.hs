@@ -182,4 +182,5 @@ main = do
   [portString] <- getArgs
   zk <- Zk.newZkInterface "localhost:2181"
   notifier <- newUpdateNotifier zk
+  let notifier = undefined
   simpleHttpServe (setPort (read portString) mempty :: Config Snap ()) (site zk notifier)
