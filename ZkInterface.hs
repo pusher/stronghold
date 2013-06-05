@@ -25,11 +25,19 @@ data ZkInterface = ZkInterface !(TVar (Maybe ByteString)) !Zoo.ZHandle
 tryGetHeadSTM :: ZkInterface -> STM (Maybe ByteString)
 tryGetHeadSTM (ZkInterface head _) = readTVar head
 
+getHeadIfNot :: ZkInterface -> ByteString -> IO ByteString
+getHeadIfNot zk ref = atomically $ do
+  head <- getHeadSTM zk
+  if head == ref then do
+    retry
+   else
+    return head
+
 getHeadSTM :: ZkInterface -> STM ByteString
 getHeadSTM zk = tryGetHeadSTM zk >>= maybe retry return
 
 getHead :: ZkInterface -> IO (Maybe B.ByteString)
-getHead (ZkInterface head _) = (readTVarIO head)
+getHead (ZkInterface head _) = readTVarIO head
 
 fetchHeadAndWatch :: ZkInterface -> IO ()
 fetchHeadAndWatch (ZkInterface head zk) = do
@@ -37,7 +45,9 @@ fetchHeadAndWatch (ZkInterface head zk) = do
   atomically $ writeTVar head dat
 
 watcher :: ZkInterface -> Zoo.ZHandle -> Zoo.EventType -> Zoo.State -> String -> IO ()
-watcher zk _ Zoo.Changed _ "/head" = fetchHeadAndWatch zk
+watcher zk _ Zoo.Changed _ "/head" = do
+  print "head update"
+  fetchHeadAndWatch zk
 watcher _ _ zEventType zState path =
   putStrLn ("watch: '" ++ path ++ "' :: " ++ show zEventType ++ " " ++ show zState)
 

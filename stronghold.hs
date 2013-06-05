@@ -20,7 +20,6 @@ import Control.Applicative ((<$>), (<|>))
 import Control.Monad (foldM)
 import Control.Monad.IO.Class (liftIO)
 import Control.Exception (tryJust, try, SomeException)
-import Control.Concurrent.Async (wait)
 
 import Snap.Core
 import Snap.Http.Server
@@ -32,7 +31,6 @@ import System.Environment (getArgs)
 import qualified ZkInterface as Zk
 import StoredData
 import Trees
-import UpdateNotifier
 
 data HTTPStatus =
   BadRequest |
@@ -57,8 +55,8 @@ sendError status body = do
   writeText body
   writeText "\n"
 
-site :: Zk.ZkInterface -> UpdateNotifier -> Snap ()
-site zk notifier =
+site :: Zk.ZkInterface -> Snap ()
+site zk =
   ifTop (writeBS "Stronghold say hi") <|>
   route [
     ("head", fetchHead),
@@ -107,8 +105,7 @@ site zk notifier =
   next hist = method GET $ do
     path <- rqPathInfo <$> getRequest
     let parts = Text.splitOn "/" (decodeUtf8 path)
-    future <- liftIO $ nextMaterializedView notifier hist parts
-    json <- liftIO $ wait $ future
+    json <- liftIO $ nextMaterializedView zk hist parts
     writeLBS $ Aeson.encode json
 
   info :: History -> Snap ()
@@ -181,5 +178,4 @@ main :: IO ()
 main = do
   [portString] <- getArgs
   zk <- Zk.newZkInterface "localhost:2181"
-  notifier <- newUpdateNotifier zk
-  simpleHttpServe (setPort (read portString) mempty :: Config Snap ()) (site zk notifier)
+  simpleHttpServe (setPort (read portString) mempty :: Config Snap ()) (site zk)

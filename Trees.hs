@@ -6,7 +6,7 @@ module Trees where
   data in zookeeper.
 -}
 
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, isJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Aeson as Aeson
@@ -19,6 +19,7 @@ import Control.Applicative ((<$>))
 import Control.Monad (foldM)
 
 import StoredData
+import qualified ZkInterface as Zk
 
 -- This is a little tricky, if you're having difficulty understanding, read up 
 -- on fixed point combinators and fixed point types.
@@ -220,17 +221,20 @@ deepMerge _ x = x
 
 -- from < x <= to
 revisionsBetween :: Ref HistoryTag -> Ref HistoryTag -> StoreOp (Maybe [Ref HistoryTag])
-revisionsBetween from to =
-  fmap (fmap reverse) (revisionsBetween from to)
+revisionsBetween from to = do
+  fmap (fmap reverse) (revisionsBetween' from to)
  where
   revisionsBetween' :: Ref HistoryTag -> Ref HistoryTag -> StoreOp (Maybe [Ref HistoryTag])
   revisionsBetween' from to = do
     hist <- derefHistory (makeHistoryTree to)
     case hist of
       Nil -> return Nothing
-      Cons x (Mu (Left xs)) -> do
-        revisions <- revisionsBetween' from xs
-        return (fmap (to :) revisions)
+      Cons x (Mu (Left xs)) ->
+        if xs == from then
+          return (Just [to])
+         else do
+          revisions <- revisionsBetween' from xs
+          return (fmap (to :) revisions)
 
 hierarchyFromRevision :: Ref HistoryTag -> StoreOp Hierarchy
 hierarchyFromRevision = lastHierarchy . makeHistoryTree
@@ -244,6 +248,37 @@ materializedView path hier = do
     (z'', json) <- getJSON z'
     return (z'', json:l)) (z', [json]) path
   return (solidifyHierarchyZipper z'', foldl1 deepMerge $ reverse jsons)
+
+nextMaterializedView :: Zk.ZkInterface -> Ref HistoryTag -> [Text] -> IO (Maybe JSON)
+nextMaterializedView zk ref path = do
+  head <- Zk.getHeadIfNot zk (unref ref)
+  revisions <- runStoreOp zk $ revisionsBetween ref (makeRef head)
+  case revisions of
+    Nothing -> do
+      b <- runStoreOp zk $ isJust <$> revisionsBetween (makeRef head) ref
+      if b then do
+        -- wait for head to change
+        Zk.getHeadIfNot zk head
+        -- try again
+        nextMaterializedView zk ref path
+       else
+        return Nothing
+    Just revisions' -> do
+      (_, json) <- runStoreOp zk $ do
+        hier <- hierarchyFromRevision ref
+        materializedView path hier
+      foldM (\result revision ->
+        case result of
+          Just _ ->
+            return result
+          Nothing ->
+            runStoreOp zk $ do
+              hier <- hierarchyFromRevision revision
+              (_, json') <- materializedView path hier
+              if json == json' then
+                return Nothing
+               else
+                return (Just json')) Nothing revisions'
 
 updateHierarchy :: MetaInfo -> [Text] -> JSON -> Ref HistoryTag -> StoreOp (Maybe (Ref HistoryTag))
 updateHierarchy meta parts json ref = do
