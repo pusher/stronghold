@@ -249,7 +249,7 @@ materializedView path hier = do
     return (z'', json:l)) (z', [json]) path
   return (solidifyHierarchyZipper z'', foldl1 deepMerge $ reverse jsons)
 
-nextMaterializedView :: Zk.ZkInterface -> Ref HistoryTag -> [Text] -> IO (Maybe JSON)
+nextMaterializedView :: Zk.ZkInterface -> Ref HistoryTag -> [Text] -> IO (Maybe (JSON, Ref HistoryTag))
 nextMaterializedView zk ref path = do
   head <- Zk.getHeadIfNot zk (unref ref)
   revisions <- runStoreOp zk $ revisionsBetween ref (makeRef head)
@@ -278,7 +278,7 @@ nextMaterializedView zk ref path = do
               if json == json' then
                 return Nothing
                else
-                return (Just json')) Nothing revisions'
+                return (Just (json', revision))) Nothing revisions'
       case result of
         Nothing -> nextMaterializedView zk (makeRef head) path
         Just _ -> return result

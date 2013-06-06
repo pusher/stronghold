@@ -103,10 +103,13 @@ site zk =
 
   next :: Ref HistoryTag -> Snap ()
   next hist = method GET $ do
+    extendTimeout 300
     path <- rqPathInfo <$> getRequest
     let parts = Text.splitOn "/" (decodeUtf8 path)
-    json <- liftIO $ nextMaterializedView zk hist parts
-    writeLBS $ Aeson.encode json
+    result <- liftIO $ nextMaterializedView zk hist parts
+    (json, revision) <- maybe (fail "") return result
+    let object = [("data", json), ("revision", Aeson.String (decodeUtf8 (unref previous)))]
+    writeLBS $ Aeson.encode $ Aeson.object object
 
   info :: History -> Snap ()
   info hist = ifTop $ method GET $ do
