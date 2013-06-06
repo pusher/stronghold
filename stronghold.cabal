@@ -4,7 +4,7 @@ build-type:          Simple
 cabal-version:       >=1.8
 
 executable stronghold
-  ghc-options:         -threaded -prof -rtsopts
+  ghc-options:         -threaded -rtsopts
   main-is:             stronghold.hs
   build-depends:       base ==4.6.*, operational, bytestring, text, aeson,
                        snap-server, snap-core, cereal, zookeeper, cryptohash,
