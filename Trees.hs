@@ -14,6 +14,7 @@ import Data.HashMap.Strict (HashMap, unionWith)
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.HashSet as HashSet
 import Data.Hashable (Hashable)
+import Data.Time.Clock (UTCTime)
 
 import Control.Applicative ((<$>))
 import Control.Monad (foldM)
@@ -36,6 +37,9 @@ type History = Mu (Ref HistoryTag) (ListNode (MetaInfo, Hierarchy))
 
 makeHistoryTree :: Ref HistoryTag -> History
 makeHistoryTree = Mu . Left
+
+makeHierarchyTree :: Ref HierarchyTag -> Hierarchy
+makeHierarchyTree = Mu . Left
 
 storeJSON :: JSON' -> StoreOp (Ref JSONTag)
 storeJSON (Left x) = return x
@@ -151,49 +155,6 @@ subPaths z =
     paths <- subPaths z'
     return (map (\i -> Text.concat ["/", child, i]) paths)) (children z)
 
-data HistoryCtx = HistoryCtx History [(MetaInfo, Hierarchy)]
-data HistoryZipper = HistoryZipper HistoryCtx MetaInfo Hierarchy
-
-back :: HistoryZipper -> StoreOp (Maybe HistoryZipper)
-back (HistoryZipper (HistoryCtx l r) meta hier) = do
-  l' <- derefHistory l
-  return $ case l' of
-    Nil -> Nothing
-    Cons (meta', hier') xs ->
-      Just (HistoryZipper (HistoryCtx xs ((meta, hier):r)) meta' hier')
-
-forward :: HistoryZipper -> HistoryZipper
-forward z@(HistoryZipper (HistoryCtx l r) meta hier) = do
-  case r of
-    [] -> z
-    ((meta', hier'):xs) ->
-      HistoryZipper (HistoryCtx (refHistory (Cons (meta, hier) l)) xs) meta' hier'
-
-isForwardMost :: HistoryZipper -> Bool
-isForwardMost (HistoryZipper (HistoryCtx _ x) _ _) = null x
-
-forwardMost :: HistoryZipper -> HistoryZipper
-forwardMost z =
-  if isForwardMost z then
-    z
-  else
-    forwardMost (forward z)
-
-getMetaInfo :: HistoryZipper -> MetaInfo
-getMetaInfo (HistoryZipper _ meta _) = meta
-
-setMetaInfo :: MetaInfo -> HistoryZipper -> HistoryZipper
-setMetaInfo meta (HistoryZipper histCtx _ hier) =
-  HistoryZipper histCtx meta hier
-
-getHierarchy :: HistoryZipper -> Hierarchy
-getHierarchy (HistoryZipper _ _ hier) = hier
-
-solidifyHistory :: HistoryZipper -> History
-solidifyHistory z =
-  let (HistoryZipper (HistoryCtx l _) meta hier) = forwardMost z in
-    refHistory (Cons (meta, hier) l)
-
 emptyHierarchy :: Hierarchy
 emptyHierarchy =
   refHierarchy (TreeNode HashMap.empty (refJSON (Aeson.object [])))
@@ -204,13 +165,6 @@ lastHierarchy hist = do
   case hist' of
     Nil -> return emptyHierarchy
     Cons (_, hier) _ -> return hier
-
-lastMetaInfo :: History -> StoreOp (Maybe MetaInfo)
-lastMetaInfo hist = do
-  hist' <- derefHistory hist
-  case hist' of
-    Nil -> return Nothing
-    Cons (meta, _) _ -> return (Just meta)
 
 addHistory :: MetaInfo -> Hierarchy -> History -> History
 addHistory meta hier hist = refHistory (Cons (meta, hier) hist)
@@ -282,6 +236,102 @@ nextMaterializedView zk ref path = do
       case result of
         Nothing -> nextMaterializedView zk (makeRef head) path
         Just _ -> return result
+
+loadHistory :: Ref HistoryTag -> StoreOp (Maybe (MetaInfo, Ref HierarchyTag, Ref HistoryTag))
+loadHistory hist = do
+  HistoryNode hist' <- load hist
+  case hist' of
+    Nil -> return Nothing
+    Cons (meta, hier) hist'' -> return (Just (meta, hier, hist''))
+
+loadHierarchy :: Ref HierarchyTag -> StoreOp (JSON, HashMap Text (Ref HierarchyTag))
+loadHierarchy ref = do
+  HierarchyNode (TreeNode table jsonref) <- load ref
+  JSONData json <- load jsonref
+  return (json, table)
+
+findActive :: UTCTime -> StoreOp (Maybe (Ref HistoryTag))
+findActive ts = do
+  head <- getHead
+  findActive' head
+ where
+  findActive' :: Ref HistoryTag -> StoreOp (Maybe (Ref HistoryTag))
+  findActive' ref = do
+    dat <- loadHistory ref
+    case dat of
+      Nothing -> return Nothing
+      Just (MetaInfo ts' _ _, _, next) ->
+        if ts > ts' then
+          return (Just ref)
+        else
+          findActive' next
+
+fetchHistory :: Maybe Int -> Ref HistoryTag -> StoreOp [(Ref HistoryTag, MetaInfo)]
+fetchHistory limit ref =
+  fmap reverse (fetchHistory' limit ref)
+ where
+  fetchHistory' :: Maybe Int -> Ref HistoryTag -> StoreOp [(Ref HistoryTag, MetaInfo)]
+  fetchHistory' (Just 0) _ = return []
+  fetchHistory' limit ref = do
+    ref' <- loadHistory ref
+    case ref' of
+      Nothing -> return []
+      Just (meta, _, next) -> ((ref, meta) :) <$> fetchHistory (fmap (flip (-) 1) limit) next
+
+data AtLeastOneOf a b = OnlyLeft a | OnlyRight b | Both a b
+
+unionPlah :: (Hashable k, Ord k) => HashMap k a -> HashMap k b -> HashMap k (AtLeastOneOf a b)
+unionPlah a b =
+  HashMap.unionWith
+    (\(OnlyLeft x) (OnlyRight y) -> Both x y)
+    (HashMap.map OnlyLeft a)
+    (HashMap.map OnlyRight b)
+
+collapse :: Ref HierarchyTag -> StoreOp [([Text], JSON)]
+collapse ref = do
+  (json, table) <- loadHierarchy ref
+  let changes = if json == Aeson.object [] then [] else [([], json)]
+  l <- mapM (\(k, v) -> do
+    dat <- collapse v
+    return (map (\(p, json) -> (k:p, json)) dat)) (HashMap.toList table)
+  return (changes ++ concat l)
+
+diff :: Ref HierarchyTag -> Ref HierarchyTag -> StoreOp [([Text], JSON, JSON)]
+diff x y =
+  if x == y then
+    return []
+  else do
+    (xJson, xMap) <- loadHierarchy x
+    (yJson, yMap) <- loadHierarchy y
+    let changes = if xJson == yJson then [([], xJson, yJson)] else []
+    let l = HashMap.toList (unionPlah xMap yMap)
+    l' <- mapM (\(k, x) ->
+      case x of
+        OnlyLeft x -> do
+          l <- collapse x
+          return (map (\(path, json) -> (path, json, Aeson.object [])) l)
+        OnlyRight x -> do
+          l <- collapse x
+          return (map (\(path, json) -> (path, Aeson.object [], json)) l)
+        Both x y -> do
+          changes <- diff x y
+          return (map (\(a, b, c) -> (k:a, b, c)) changes)) l
+    return (changes ++ concat l')
+
+loadInfo :: Ref HistoryTag -> StoreOp (Maybe (MetaInfo, Ref HistoryTag, [([Text], JSON, JSON)]))
+loadInfo ref = do
+  x <- loadHistory ref
+  case x of
+    Nothing -> return Nothing
+    Just (meta, hier, prev) -> do
+      y <- loadHistory prev
+      case y of
+        Nothing -> do
+          d <- collapse hier
+          return (Just (meta, prev, map (\(x, y) -> (x, Aeson.object [], y)) d))
+        Just (_, hier', _) -> do
+          d <- diff hier' hier
+          return (Just (meta, prev, d))
 
 updateHierarchy :: MetaInfo -> [Text] -> JSON -> Ref HistoryTag -> StoreOp (Maybe (Ref HistoryTag))
 updateHierarchy meta parts json ref = do

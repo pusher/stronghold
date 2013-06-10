@@ -205,27 +205,22 @@ runStoreOp zk op =
     Return x -> return x
     (Store d) :>>= rest -> do
       let d' = encode d
---      print ("storing", d')
       ref <- Zk.storeData zk d'
       ref' <- maybe (fail "couldn't store node in zookeeper") return ref
       runStoreOp zk (rest (makeRef ref'))
     (Load r) :>>= rest -> do
---      print ("loading", (unref r))
       dat <- Zk.loadData zk (unref r)
       dat' <- maybe (fail "no such ref") return dat
       either fail (runStoreOp zk . rest) (decode dat')
     GetHead :>>= rest -> do
---      print "getting head"
       head <- Zk.getHead zk
       head' <- maybe (fail "couldn't fetch head") return head
       runStoreOp zk (rest (makeRef head'))
     (UpdateHead old new) :>>= rest -> do
---      print ("updating head", unref old, unref new)
       b <- Zk.updateHead zk (unref old) (unref new)
       print b
       runStoreOp zk (rest b)
     (CreateRef r) :>>= rest -> do
---      print ("creating ref", r)
       b <- Zk.hasReference zk r
       if b then
         runStoreOp zk (rest (Just (makeRef r)))

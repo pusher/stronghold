@@ -6,18 +6,18 @@ module Main where
 -}
 
 import Data.Monoid (mempty)
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, listToMaybe)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base16 as Base16
-import Data.Text (Text)
+import Data.Text (Text, unpack)
 import qualified Data.Text as Text
 import Data.Text.Encoding (decodeUtf8)
 import qualified Data.Aeson as Aeson
 import qualified Data.HashMap.Strict as HashMap
-import Data.Time.Clock (getCurrentTime)
+import Data.Time.Clock (getCurrentTime, UTCTime)
 
-import Control.Applicative ((<$>), (<|>))
-import Control.Monad (foldM)
+import Control.Applicative ((<$>), (<|>), empty)
+import Control.Monad (foldM, join)
 import Control.Monad.IO.Class (liftIO)
 import Control.Exception (tryJust, try, SomeException)
 
@@ -75,7 +75,7 @@ site zk =
             ("tree/paths", paths hist),
             ("tree/materialized/", materialized hist),
             ("tree/peculiar/", peculiar hist),
-            ("change", info hist),
+            ("change", info ref'),
             ("next/tree/materialized", next ref'),
             ("update/", update ref')
            ]
@@ -86,9 +86,49 @@ site zk =
     head <- liftIO $ runStoreOp zk getHead
     writeBS (unref head)
 
+  fetchAt :: UTCTime -> Snap ()
+  fetchAt ts = do
+    ref <- liftIO $ runStoreOp zk $ findActive ts
+    case ref of
+      Nothing -> writeText ""
+      Just ref' -> writeBS (unref ref')
+
+  recordToJSON :: Ref HistoryTag -> MetaInfo -> JSON
+  recordToJSON ref (MetaInfo ts comment author) =
+    Aeson.object [
+      ("revision", Aeson.toJSON (unref ref)),
+      ("timestamp", Aeson.toJSON ts),
+      ("comment", Aeson.toJSON comment),
+      ("author", Aeson.toJSON author)
+     ]
+
+  fetchN :: Maybe Int -> Ref HistoryTag -> Snap ()
+  fetchN limit ref = do
+    result <- liftIO $ runStoreOp zk $ fetchHistory limit ref
+    let result' = map (uncurry recordToJSON) result
+    writeLBS $ Aeson.encode result'
+
+  maybeRead :: Read a => String -> Maybe a
+  maybeRead = fmap fst . listToMaybe . reads
+
   -- query the set of versions
   versions :: Snap ()
-  versions = undefined
+  versions = ifTop $ method GET $ do
+    ts <- getParam "at"
+    case ts of
+      Just ts' -> do
+        ts'' <- (maybe empty return . maybeRead . unpack . decodeUtf8) ts'
+        fetchAt ts''
+      Nothing -> do
+        last <- getParam "last"
+        last' <- maybe empty return last
+        last'' <- liftIO $ runStoreOp zk $ createRef last'
+        case last'' of
+          Just last''' -> do
+            size <- getParam "size"
+            let size' = (join  . fmap (maybeRead . unpack . decodeUtf8)) size
+            fetchN size' last'''
+          Nothing -> sendError UnprocessableEntity "Invalid reference"
 
   paths :: History -> Snap ()
   paths hist = ifTop $ method GET $ do
@@ -108,14 +148,14 @@ site zk =
     let parts = Text.splitOn "/" (decodeUtf8 path)
     result <- liftIO $ nextMaterializedView zk hist parts
     (json, revision) <- maybe (fail "") return result
-    let object = [("data", json), ("revision", Aeson.String (decodeUtf8 (unref previous)))]
+    let object = [("data", json), ("revision", Aeson.String (decodeUtf8 (unref revision)))]
     writeLBS $ Aeson.encode $ Aeson.object object
 
-  info :: History -> Snap ()
-  info hist = ifTop $ method GET $ do
-    meta <- liftIO $ runStoreOp zk $ lastMetaInfo hist
-    -- TODO: include the previous reference
-    writeLBS $ Aeson.encode meta
+  info :: Ref HistoryTag -> Snap ()
+  info ref = ifTop $ method GET $ do
+    result <- liftIO $ runStoreOp zk $ loadInfo ref
+    let result' = fmap (\(meta, ref, changes) -> (meta, unref ref, changes)) result
+    writeLBS $ Aeson.encode result'
 
   materialized :: History -> Snap ()
   materialized hist = method GET $ do
