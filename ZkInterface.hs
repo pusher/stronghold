@@ -80,17 +80,27 @@ isErrNoNode :: Zoo.ZooError -> Bool
 isErrNoNode (Zoo.ErrNoNode _) = True
 isErrNoNode _ = False
 
+isConnectionError :: Zoo.ZooError -> Bool
+isConnectionError (Zoo.ErrConnectionLoss _) = True
+isConnectionError _ = False
+
+orFn :: (a -> Bool) -> (a -> Bool) -> (a -> Bool)
+orFn f g x = f x || g x
+
 tryMaybeT :: Exception e => (e -> Bool) -> IO a -> MaybeT IO a
 tryMaybeT f a = lift (tryJust (guard . f) a) >>= either (const empty) (return)
 
 loadData :: ZkInterface -> B.ByteString -> MaybeT IO B.ByteString
 loadData (ZkInterface _ zk) ref =
-  (join . fmap (MaybeT . return . fst) . tryMaybeT isErrNoNode) (Zoo.get zk (getZkPath ref) Zoo.NoWatch)
+  -- fail on: no node, connection error or no data at the node
+  (join . fmap (MaybeT . return . fst) . tryMaybeT (isErrNoNode `orFn` isConnectionError))
+    (Zoo.get zk (getZkPath ref) Zoo.NoWatch)
 
 storeData :: ZkInterface -> B.ByteString -> MaybeT IO B.ByteString
 storeData (ZkInterface _ zk) d = do
   let h = (Base16.encode . hash) d
-  tryMaybeT isErrNodeExists $
+  -- fail on connection errors, but ignore node exists errors
+  tryMaybeT isConnectionError $ tryJust (guard . isErrNodeExists) $
     Zoo.create zk (getZkPath h) (Just d) Zoo.OpenAclUnsafe (Zoo.CreateMode False False)
   return h
 
@@ -99,11 +109,11 @@ hasReference zk r = lift (isJust <$> runMaybeT (loadData zk r))
 
 updateHead :: ZkInterface -> B.ByteString -> B.ByteString -> MaybeT IO Bool
 updateHead (ZkInterface _ zk) old new = do
-  (dat, stat) <- lift $ Zoo.get zk "/head" Zoo.NoWatch
+  (dat, stat) <- tryMaybeT isConnectionError $ Zoo.get zk "/head" Zoo.NoWatch
   dat' <- MaybeT (return dat)
   if old == dat' then do
-    -- FIXME: exceptions here should be caught
-    result <- lift $ Zoo.set zk "/head" (Just new) (fromIntegral (Zoo.stat_version stat))
+    result <- tryMaybeT isConnectionError $
+      Zoo.set zk "/head" (Just new) (fromIntegral (Zoo.stat_version stat))
     return True
    else
     return False
