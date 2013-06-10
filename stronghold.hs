@@ -46,6 +46,7 @@ errorCode UnprocessableEntity = 422
 errorCode InternalServerError = 500
 
 errorMessage :: HTTPStatus -> ByteString
+errorMessage InternalServerError = "Internal Server Error"
 errorMessage BadRequest = "Bad Request"
 errorMessage Conflict = "Conflict"
 errorMessage UnprocessableEntity = "Unprocessable Entity"
