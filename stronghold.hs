@@ -56,6 +56,18 @@ sendError status body = do
   writeText body
   writeText "\n"
 
+finish :: Snap a
+finish = getResponse >>= finishWith
+
+runStoreOpSnap :: Zk.ZkInterface -> StoreOp a -> Snap a
+runStoreOpSnap zk op = do
+  result <- liftIO $ runStoreOp' zk op
+  case result of
+    Nothing -> do
+      sendError InternalServerError "There was some Zookeeper related error"
+      finish
+    Just x -> return x
+
 site :: Zk.ZkInterface -> Snap ()
 site zk =
   ifTop (writeBS "Stronghold say hi") <|>
@@ -68,7 +80,7 @@ site zk =
   withVersion :: Snap ()
   withVersion = do
     Just version <- getParam "version"
-    ref <- liftIO $ runStoreOp zk (createRef version)
+    ref <- runStoreOpSnap zk (createRef version)
     case ref of
       Just ref' ->
         let hist = makeHistoryTree ref' in
@@ -84,12 +96,12 @@ site zk =
 
   fetchHead :: Snap ()
   fetchHead = ifTop $ method GET $ do
-    head <- liftIO $ runStoreOp zk getHead
+    head <- runStoreOpSnap zk getHead
     writeBS (unref head)
 
   fetchAt :: UTCTime -> Snap ()
   fetchAt ts = do
-    ref <- liftIO $ runStoreOp zk $ findActive ts
+    ref <- runStoreOpSnap zk $ findActive ts
     case ref of
       Nothing -> writeText ""
       Just ref' -> writeBS (unref ref')
@@ -105,7 +117,7 @@ site zk =
 
   fetchN :: Maybe Int -> Ref HistoryTag -> Snap ()
   fetchN limit ref = do
-    result <- liftIO $ runStoreOp zk $ fetchHistory limit ref
+    result <- runStoreOpSnap zk $ fetchHistory limit ref
     let result' = map (uncurry recordToJSON) result
     writeLBS $ Aeson.encode result'
 
@@ -123,7 +135,7 @@ site zk =
       Nothing -> do
         last <- getParam "last"
         last' <- maybe empty return last
-        last'' <- liftIO $ runStoreOp zk $ createRef last'
+        last'' <- runStoreOpSnap zk $ createRef last'
         case last'' of
           Just last''' -> do
             size <- getParam "size"
@@ -133,7 +145,7 @@ site zk =
 
   paths :: History -> Snap ()
   paths hist = ifTop $ method GET $ do
-    paths <- liftIO $ runStoreOp zk $ do
+    paths <- runStoreOpSnap zk $ do
       hist' <- derefHistory hist
       case hist' of
         Nil -> return []
@@ -147,8 +159,8 @@ site zk =
     extendTimeout 300
     path <- rqPathInfo <$> getRequest
     let parts = Text.splitOn "/" (decodeUtf8 path)
-    result <- liftIO $ nextMaterializedView zk hist parts
-    (json, revision) <- maybe (fail "") return result
+    result <- runStoreOpSnap zk $ nextMaterializedView hist parts
+    (json, revision) <- maybe (liftIO $ fail "") return result
     let object = [("data", json), ("revision", Aeson.String (decodeUtf8 (unref revision)))]
     writeLBS $ Aeson.encode $ Aeson.object object
 
@@ -175,14 +187,14 @@ site zk =
 
   info :: Ref HistoryTag -> Snap ()
   info ref = ifTop $ method GET $ do
-    result <- liftIO $ runStoreOp zk $ loadInfo ref
+    result <- runStoreOpSnap zk $ loadInfo ref
     writeLBS $ Aeson.encode $ fmap formatInfo result
 
   materialized :: History -> Snap ()
   materialized hist = method GET $ do
     path <- rqPathInfo <$> getRequest
     let parts = Text.splitOn "/" (decodeUtf8 path)
-    json <- liftIO $ runStoreOp zk $ do
+    json <- runStoreOpSnap zk $ do
       hier <- lastHierarchy hist
       snd <$> materializedView parts hier
     writeLBS $ Aeson.encode $ json
@@ -191,7 +203,7 @@ site zk =
   peculiar hist = method GET $ do
     path <- rqPathInfo <$> getRequest
     let parts = Text.splitOn "/" (decodeUtf8 path)
-    json <- liftIO $ runStoreOp zk $ do
+    json <- runStoreOpSnap zk $ do
       hier <- lastHierarchy hist
       z <- makeHierarchyZipper hier
       z' <- followPath parts z
@@ -232,7 +244,7 @@ site zk =
           Just (author, comment, dat) -> do
             ts <- liftIO $ getCurrentTime
             let meta = MetaInfo ts comment author
-            result <- (liftIO $ runStoreOp zk $ updateHierarchy meta parts dat ref)
+            result <- (runStoreOpSnap zk $ updateHierarchy meta parts dat ref)
             case result of
               Just head -> writeBS (unref head)
               Nothing ->

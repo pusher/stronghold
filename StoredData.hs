@@ -20,6 +20,8 @@ import Data.Time.Calendar (Day (ModifiedJulianDay), toModifiedJulianDay)
 
 import Control.Applicative ((<$>))
 import Control.Monad (when)
+import Control.Monad.Trans (lift)
+import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
 import Control.Monad.Operational (ProgramViewT (..), singleton, view, Program)
 
 import Crypto.Hash.SHA1 (hash)
@@ -171,6 +173,7 @@ data StoreInstr a where
   Store :: TagClass t => Data t -> StoreInstr (Ref t)
   Load :: TagClass t => Ref t -> StoreInstr (Data t)
   GetHead :: StoreInstr (Ref HistoryTag)
+  GetHeadBlockIfEq :: Ref HistoryTag -> StoreInstr (Ref HistoryTag)
   UpdateHead :: Ref HistoryTag -> Ref HistoryTag -> StoreInstr Bool
   CreateRef :: ByteString -> StoreInstr (Maybe (Ref HistoryTag))
 
@@ -185,6 +188,9 @@ load = singleton . Load
 getHead :: StoreOp (Ref HistoryTag)
 getHead = singleton GetHead
 
+getHeadBlockIfEq :: Ref HistoryTag -> StoreOp (Ref HistoryTag)
+getHeadBlockIfEq = singleton . GetHeadBlockIfEq
+
 updateHead :: Ref HistoryTag -> Ref HistoryTag -> StoreOp Bool
 updateHead prev next = singleton $ UpdateHead prev next
 
@@ -198,27 +204,25 @@ isRight _ = False
 validHistoryNode :: ByteString -> Bool
 validHistoryNode s = isRight (decode s :: Either String (Data HistoryTag))
 
--- It should be possible to run a store operation
-runStoreOp :: Zk.ZkInterface -> StoreOp a -> IO a
+runStoreOp :: Zk.ZkInterface -> StoreOp a -> MaybeT IO a
 runStoreOp zk op =
   case view op of
     Return x -> return x
     (Store d) :>>= rest -> do
       let d' = encode d
       ref <- Zk.storeData zk d'
-      ref' <- maybe (fail "couldn't store node in zookeeper") return ref
-      runStoreOp zk (rest (makeRef ref'))
+      runStoreOp zk (rest (makeRef ref))
     (Load r) :>>= rest -> do
       dat <- Zk.loadData zk (unref r)
-      dat' <- maybe (fail "no such ref") return dat
-      either fail (runStoreOp zk . rest) (decode dat')
+      either fail (runStoreOp zk . rest) (decode dat)
     GetHead :>>= rest -> do
       head <- Zk.getHead zk
-      head' <- maybe (fail "couldn't fetch head") return head
-      runStoreOp zk (rest (makeRef head'))
+      runStoreOp zk (rest (makeRef head))
+    (GetHeadBlockIfEq ref) :>>= rest -> do
+      head <- Zk.getHeadBlockIfEq zk (unref ref)
+      runStoreOp zk (rest (makeRef head))
     (UpdateHead old new) :>>= rest -> do
       b <- Zk.updateHead zk (unref old) (unref new)
-      print b
       runStoreOp zk (rest b)
     (CreateRef r) :>>= rest -> do
       b <- Zk.hasReference zk r
@@ -226,3 +230,6 @@ runStoreOp zk op =
         runStoreOp zk (rest (Just (makeRef r)))
        else
         runStoreOp zk (rest (Nothing))
+
+runStoreOp' :: Zk.ZkInterface -> StoreOp a -> IO (Maybe a)
+runStoreOp' zk op = runMaybeT (runStoreOp zk op)

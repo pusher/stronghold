@@ -2,7 +2,7 @@ module ZkInterface (
   ZkInterface,
   newZkInterface,
   getHead,
-  getHeadIfNot,
+  getHeadBlockIfEq,
   loadData,
   storeData,
   hasReference,
@@ -20,9 +20,11 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Base16 as Base16
 
-import Control.Applicative ((<$>), (<*>))
+import Control.Applicative ((<$>), (<*>), empty)
 import Control.Monad (guard, join)
-import Control.Exception (tryJust)
+import Control.Monad.Trans (lift)
+import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
+import Control.Exception (tryJust, Exception)
 import Control.Concurrent.STM (STM, atomically, retry, TVar, readTVar, writeTVar, newTVarIO, readTVarIO)
 
 import Crypto.Hash.SHA1 (hash)
@@ -34,19 +36,19 @@ data ZkInterface = ZkInterface !(TVar (Maybe ByteString)) !Zoo.ZHandle
 tryGetHeadSTM :: ZkInterface -> STM (Maybe ByteString)
 tryGetHeadSTM (ZkInterface head _) = readTVar head
 
-getHeadIfNot :: ZkInterface -> ByteString -> IO ByteString
-getHeadIfNot zk ref = atomically $ do
+getHeadSTM :: ZkInterface -> STM ByteString
+getHeadSTM zk = tryGetHeadSTM zk >>= maybe retry return
+
+getHead :: ZkInterface -> MaybeT IO B.ByteString
+getHead (ZkInterface head _) = MaybeT (readTVarIO head)
+
+getHeadBlockIfEq :: ZkInterface -> B.ByteString -> MaybeT IO B.ByteString
+getHeadBlockIfEq zk ref = lift $ atomically $ do
   head <- getHeadSTM zk
   if head == ref then do
     retry
    else
     return head
-
-getHeadSTM :: ZkInterface -> STM ByteString
-getHeadSTM zk = tryGetHeadSTM zk >>= maybe retry return
-
-getHead :: ZkInterface -> IO (Maybe B.ByteString)
-getHead (ZkInterface head _) = readTVarIO head
 
 fetchHeadAndWatch :: ZkInterface -> IO ()
 fetchHeadAndWatch (ZkInterface head zk) = do
@@ -55,7 +57,6 @@ fetchHeadAndWatch (ZkInterface head zk) = do
 
 watcher :: ZkInterface -> Zoo.ZHandle -> Zoo.EventType -> Zoo.State -> String -> IO ()
 watcher zk _ Zoo.Changed _ "/head" = do
-  print "head update"
   fetchHeadAndWatch zk
 watcher _ _ zEventType zState path =
   putStrLn ("watch: '" ++ path ++ "' :: " ++ show zEventType ++ " " ++ show zState)
@@ -79,29 +80,30 @@ isErrNoNode :: Zoo.ZooError -> Bool
 isErrNoNode (Zoo.ErrNoNode _) = True
 isErrNoNode _ = False
 
--- TODO: handle disconnected zookeeper
-loadData :: ZkInterface -> B.ByteString -> IO (Maybe B.ByteString)
-loadData (ZkInterface _ zk) ref = do
-  result <- tryJust (guard . isErrNoNode) (Zoo.get zk (getZkPath ref) Zoo.NoWatch)
-  return (either (const Nothing) fst result)
+tryMaybeT :: Exception e => (e -> Bool) -> IO a -> MaybeT IO a
+tryMaybeT f a = lift (tryJust (guard . f) a) >>= either (const empty) (return)
 
-storeData :: ZkInterface -> B.ByteString -> IO (Maybe B.ByteString)
+loadData :: ZkInterface -> B.ByteString -> MaybeT IO B.ByteString
+loadData (ZkInterface _ zk) ref =
+  (join . fmap (MaybeT . return . fst) . tryMaybeT isErrNoNode) (Zoo.get zk (getZkPath ref) Zoo.NoWatch)
+
+storeData :: ZkInterface -> B.ByteString -> MaybeT IO B.ByteString
 storeData (ZkInterface _ zk) d = do
   let h = (Base16.encode . hash) d
-  tryJust (guard . isErrNodeExists) $
+  tryMaybeT isErrNodeExists $
     Zoo.create zk (getZkPath h) (Just d) Zoo.OpenAclUnsafe (Zoo.CreateMode False False)
-  return (Just h)
+  return h
 
-hasReference :: ZkInterface -> B.ByteString -> IO Bool
-hasReference zk r = isJust <$> loadData zk r
+hasReference :: ZkInterface -> B.ByteString -> MaybeT IO Bool
+hasReference zk r = lift (isJust <$> runMaybeT (loadData zk r))
 
-updateHead :: ZkInterface -> B.ByteString -> B.ByteString -> IO Bool
+updateHead :: ZkInterface -> B.ByteString -> B.ByteString -> MaybeT IO Bool
 updateHead (ZkInterface _ zk) old new = do
-  (dat, stat) <- Zoo.get zk "/head" Zoo.NoWatch
-  dat' <- maybe (fail "no head") return dat
+  (dat, stat) <- lift $ Zoo.get zk "/head" Zoo.NoWatch
+  dat' <- MaybeT (return dat)
   if old == dat' then do
     -- FIXME: exceptions here should be caught
-    result <- Zoo.set zk "/head" (Just new) (fromIntegral (Zoo.stat_version stat))
+    result <- lift $ Zoo.set zk "/head" (Just new) (fromIntegral (Zoo.stat_version stat))
     return True
    else
     return False

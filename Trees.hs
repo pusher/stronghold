@@ -201,38 +201,36 @@ materializedView path hier = do
     return (z'', json:l)) (z', [json]) path
   return (solidifyHierarchyZipper z'', foldl1 deepMerge $ reverse jsons)
 
-nextMaterializedView :: Zk.ZkInterface -> Ref HistoryTag -> [Text] -> IO (Maybe (JSON, Ref HistoryTag))
-nextMaterializedView zk ref path = do
-  head <- Zk.getHeadIfNot zk (unref ref)
-  revisions <- runStoreOp zk $ revisionsBetween ref (makeRef head)
+nextMaterializedView :: Ref HistoryTag -> [Text] -> StoreOp (Maybe (JSON, Ref HistoryTag))
+nextMaterializedView ref path = do
+  head <- getHeadBlockIfEq ref
+  revisions <- revisionsBetween ref head
   case revisions of
     Nothing -> do
-      b <- runStoreOp zk $ isJust <$> revisionsBetween (makeRef head) ref
+      b <- isJust <$> revisionsBetween head ref
       if b then do
         -- wait for head to change
-        Zk.getHeadIfNot zk head
+        getHeadBlockIfEq head
         -- try again
-        nextMaterializedView zk ref path
+        nextMaterializedView ref path
        else
         return Nothing
     Just revisions' -> do
-      (_, json) <- runStoreOp zk $ do
-        hier <- hierarchyFromRevision ref
-        materializedView path hier
+      hier <- hierarchyFromRevision ref
+      (_, json) <- materializedView path hier
       result <- foldM (\result revision ->
         case result of
           Just _ ->
             return result
-          Nothing ->
-            runStoreOp zk $ do
-              hier <- hierarchyFromRevision revision
-              (_, json') <- materializedView path hier
-              if json == json' then
-                return Nothing
-               else
-                return (Just (json', revision))) Nothing revisions'
+          Nothing -> do
+            hier <- hierarchyFromRevision revision
+            (_, json') <- materializedView path hier
+            if json == json' then
+              return Nothing
+             else
+              return (Just (json', revision))) Nothing revisions'
       case result of
-        Nothing -> nextMaterializedView zk (makeRef head) path
+        Nothing -> nextMaterializedView head path
         Just _ -> return result
 
 loadHistory :: Ref HistoryTag -> StoreOp (Maybe (MetaInfo, Ref HierarchyTag, Ref HistoryTag))
