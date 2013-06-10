@@ -56,7 +56,9 @@ fetchHeadAndWatch (ZkInterface head zk) = do
   atomically $ writeTVar head dat
 
 watcher :: ZkInterface -> Zoo.ZHandle -> Zoo.EventType -> Zoo.State -> String -> IO ()
-watcher zk _ Zoo.Changed _ "/head" = do
+watcher zk _ Zoo.Changed _ "/head" =
+  fetchHeadAndWatch zk
+watcher zk _ Zoo.Session Zoo.Connected _ =
   fetchHeadAndWatch zk
 watcher _ _ zEventType zState path =
   putStrLn ("watch: '" ++ path ++ "' :: " ++ show zEventType ++ " " ++ show zState)
@@ -66,7 +68,6 @@ newZkInterface hostPort = do
   zk <- Zoo.init hostPort Nothing 10000
   interface <- ZkInterface <$> newTVarIO Nothing <*> return zk
   Zoo.setWatcher zk (Just (watcher interface))
-  fetchHeadAndWatch interface
   return interface
 
 getZkPath :: B.ByteString -> String
@@ -105,7 +106,9 @@ storeData (ZkInterface _ zk) d = do
   return h
 
 hasReference :: ZkInterface -> B.ByteString -> MaybeT IO Bool
-hasReference zk r = lift (isJust <$> runMaybeT (loadData zk r))
+hasReference (ZkInterface _ zk) ref =
+  (fmap (isJust . fst) . tryMaybeT (isErrNoNode `orFn` isConnectionError))
+    (Zoo.get zk (getZkPath ref) Zoo.NoWatch)
 
 updateHead :: ZkInterface -> B.ByteString -> B.ByteString -> MaybeT IO Bool
 updateHead (ZkInterface _ zk) old new = do
