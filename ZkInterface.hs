@@ -1,4 +1,13 @@
-module ZkInterface where
+module ZkInterface (
+  ZkInterface,
+  newZkInterface,
+  getHead,
+  getHeadIfNot,
+  loadData,
+  storeData,
+  hasReference,
+  updateHead
+) where
 
 {-
   This module is a higher level interface for zookeeper, exposing only the 
