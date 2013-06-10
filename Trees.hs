@@ -22,6 +22,8 @@ import Control.Monad (foldM)
 import StoredData
 import qualified ZkInterface as Zk
 
+import Util (deepMerge)
+
 -- This is a little tricky, if you're having difficulty understanding, read up 
 -- on fixed point combinators and fixed point types.
 
@@ -168,10 +170,6 @@ lastHierarchy hist = do
 
 addHistory :: MetaInfo -> Hierarchy -> History -> History
 addHistory meta hier hist = refHistory (Cons (meta, hier) hist)
-
-deepMerge :: JSON -> JSON -> JSON
-deepMerge (Aeson.Object a) (Aeson.Object b) = Aeson.Object $ unionWith deepMerge a b
-deepMerge _ x = x
 
 -- from < x <= to
 revisionsBetween :: Ref HistoryTag -> Ref HistoryTag -> StoreOp (Maybe [Ref HistoryTag])

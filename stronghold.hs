@@ -31,6 +31,7 @@ import System.Environment (getArgs)
 import qualified ZkInterface as Zk
 import StoredData
 import Trees
+import Util (deepMerge)
 
 data HTTPStatus =
   BadRequest |
@@ -151,11 +152,31 @@ site zk =
     let object = [("data", json), ("revision", Aeson.String (decodeUtf8 (unref revision)))]
     writeLBS $ Aeson.encode $ Aeson.object object
 
+  renderPath :: [Text] -> Text
+  renderPath = Text.concat . concatMap (\x -> ["/", x])
+
+  formatChanges :: [([Text], JSON, JSON)] -> JSON
+  formatChanges =
+    Aeson.toJSON . map (\(path, old, new) ->
+      Aeson.object [
+        ("path", Aeson.toJSON (renderPath path)),
+        ("old", old),
+        ("new", new)
+      ])
+
+  formatInfo :: (MetaInfo, Ref HistoryTag, [([Text], JSON, JSON)]) -> JSON
+  formatInfo (meta, previous, changes) =
+    deepMerge
+      (Aeson.toJSON meta)
+      (Aeson.object [
+        ("previous", Aeson.toJSON (unref previous)),
+        ("changes", formatChanges changes)
+      ])
+
   info :: Ref HistoryTag -> Snap ()
   info ref = ifTop $ method GET $ do
     result <- liftIO $ runStoreOp zk $ loadInfo ref
-    let result' = fmap (\(meta, ref, changes) -> (meta, unref ref, changes)) result
-    writeLBS $ Aeson.encode result'
+    writeLBS $ Aeson.encode $ fmap formatInfo result
 
   materialized :: History -> Snap ()
   materialized hist = method GET $ do
