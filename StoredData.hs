@@ -27,6 +27,7 @@ import Control.Monad.Operational (ProgramViewT (..), singleton, view, Program)
 import Crypto.Hash.SHA1 (hash)
 
 import qualified ZkInterface as Zk
+import Util (integerFromUTC)
 
 type JSON = Aeson.Value
 
@@ -35,7 +36,7 @@ data MetaInfo = MetaInfo UTCTime Text Text -- timestamp, comment, author
 instance Aeson.ToJSON MetaInfo where
   toJSON (MetaInfo ts comment author) =
     Aeson.object [
-      ("timestamp", Aeson.toJSON ts),
+      ("timestamp", Aeson.toJSON (integerFromUTC ts)),
       ("comment", Aeson.String comment),
       ("author", Aeson.String author)
     ]

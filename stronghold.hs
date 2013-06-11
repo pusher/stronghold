@@ -31,7 +31,7 @@ import System.Environment (getArgs)
 import qualified ZkInterface as Zk
 import StoredData
 import Trees
-import Util (deepMerge)
+import Util (deepMerge, utcFromInteger)
 
 data HTTPStatus =
   BadRequest |
@@ -131,7 +131,7 @@ site zk =
     ts <- getParam "at"
     case ts of
       Just ts' -> do
-        ts'' <- (maybe empty return . maybeRead . unpack . decodeUtf8) ts'
+        ts'' <- (maybe empty return . fmap utcFromInteger . maybeRead . unpack . decodeUtf8) ts'
         fetchAt ts''
       Nothing -> do
         last <- getParam "last"
