@@ -31,7 +31,7 @@ import System.Environment (getArgs)
 import qualified ZkInterface as Zk
 import StoredData
 import Trees
-import Util (deepMerge, utcFromInteger)
+import Util (deepMerge, utcFromInteger, Path, pathToText, listToPath)
 
 data HTTPStatus =
   BadRequest |
@@ -87,11 +87,11 @@ site zk =
         let hist = makeHistoryTree ref' in
           route [
             ("tree/paths", paths hist),
-            ("tree/materialized/", materialized hist),
-            ("tree/peculiar/", peculiar hist),
+            ("tree/materialized", materialized hist),
+            ("tree/peculiar", peculiar hist),
             ("change", info ref'),
             ("next/tree/materialized", next ref'),
-            ("update/", update ref')
+            ("update", update ref')
            ]
       Nothing -> sendError UnprocessableEntity "Invalid reference"
 
@@ -153,31 +153,35 @@ site zk =
         Cons (_, hier) _ -> do
           z <- makeHierarchyZipper hier
           subPaths z
-    writeLBS (Aeson.encode paths)
+    writeLBS (Aeson.encode (map pathToText paths))
+
+  getPath :: Snap Path
+  getPath = do
+    path <- (decodeUtf8 . rqPathInfo) <$> getRequest
+    if Text.last path == '/' then
+      fail "couldn't construct path"
+     else
+      (return . listToPath . Text.splitOn "/") path
 
   next :: Ref HistoryTag -> Snap ()
   next hist = method GET $ do
     extendTimeout 300
-    path <- rqPathInfo <$> getRequest
-    let parts = Text.splitOn "/" (decodeUtf8 path)
-    result <- runStoreOpSnap zk $ nextMaterializedView hist parts
+    path <- getPath
+    result <- runStoreOpSnap zk $ nextMaterializedView hist path
     (json, revision) <- maybe (liftIO $ fail "") return result
     let object = [("data", json), ("revision", Aeson.String (decodeUtf8 (unref revision)))]
     writeLBS $ Aeson.encode $ Aeson.object object
 
-  renderPath :: [Text] -> Text
-  renderPath = Text.concat . concatMap (\x -> ["/", x])
-
-  formatChanges :: [([Text], JSON, JSON)] -> JSON
+  formatChanges :: [(Path, JSON, JSON)] -> JSON
   formatChanges =
     Aeson.toJSON . map (\(path, old, new) ->
       Aeson.object [
-        ("path", Aeson.toJSON (renderPath path)),
+        ("path", Aeson.toJSON (pathToText path)),
         ("old", old),
         ("new", new)
       ])
 
-  formatInfo :: (MetaInfo, Ref HistoryTag, [([Text], JSON, JSON)]) -> JSON
+  formatInfo :: (MetaInfo, Ref HistoryTag, [(Path, JSON, JSON)]) -> JSON
   formatInfo (meta, previous, changes) =
     deepMerge
       (Aeson.toJSON meta)
@@ -193,21 +197,19 @@ site zk =
 
   materialized :: History -> Snap ()
   materialized hist = method GET $ do
-    path <- rqPathInfo <$> getRequest
-    let parts = Text.splitOn "/" (decodeUtf8 path)
+    path <- getPath
     json <- runStoreOpSnap zk $ do
       hier <- lastHierarchy hist
-      snd <$> materializedView parts hier
+      snd <$> materializedView path hier
     writeLBS $ Aeson.encode $ json
 
   peculiar :: History -> Snap ()
   peculiar hist = method GET $ do
-    path <- rqPathInfo <$> getRequest
-    let parts = Text.splitOn "/" (decodeUtf8 path)
+    path <- getPath
     json <- runStoreOpSnap zk $ do
       hier <- lastHierarchy hist
       z <- makeHierarchyZipper hier
-      z' <- followPath parts z
+      z' <- followPath path z
       (_, json) <- getJSON z'
       return json
     writeLBS $ Aeson.encode json
@@ -232,8 +234,7 @@ site zk =
 
   update :: Ref HistoryTag -> Snap ()
   update ref = method POST $ do
-    path <- rqPathInfo <$> getRequest
-    let parts = Text.splitOn "/" (decodeUtf8 path)
+    path <- getPath
     body <- readRequestBody 102400
     case Aeson.decode body of
       Nothing ->
@@ -245,7 +246,7 @@ site zk =
           Just (author, comment, dat) -> do
             ts <- liftIO $ getCurrentTime
             let meta = MetaInfo ts comment author
-            result <- (runStoreOpSnap zk $ updateHierarchy meta parts dat ref)
+            result <- (runStoreOpSnap zk $ updateHierarchy meta path dat ref)
             case result of
               Just head -> writeBS (unref head)
               Nothing ->

@@ -6,6 +6,7 @@ module Trees where
   data in zookeeper.
 -}
 
+import Data.Monoid (mempty, mappend)
 import Data.Maybe (fromJust, isJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -22,7 +23,7 @@ import Control.Monad (foldM)
 import StoredData
 import qualified ZkInterface as Zk
 
-import Util (deepMerge)
+import Util (deepMerge, Path, pathToList, listToPath)
 
 -- This is a little tricky, if you're having difficulty understanding, read up 
 -- on fixed point combinators and fixed point types.
@@ -108,8 +109,8 @@ down key (HierarchyZipper (HierarchyCtx hierCtx) (TreeNode children json)) =
       def = return $ TreeNode HashMap.empty (refJSON (Aeson.object [])) in
         HierarchyZipper hierCtx' <$> maybe def derefHierarchy (HashMap.lookup key children)
 
-followPath :: [Text] -> HierarchyZipper -> StoreOp HierarchyZipper
-followPath = flip (foldM (flip down))
+followPath :: Path -> HierarchyZipper -> StoreOp HierarchyZipper
+followPath = flip (foldM (flip down)) . pathToList
 
 up :: HierarchyZipper -> HierarchyZipper
 up z@(HierarchyZipper (HierarchyCtx []) _) = z
@@ -150,12 +151,12 @@ solidifyHierarchyZipper hier =
   let HierarchyZipper _ hier' = top hier in
     refHierarchy hier'
 
-subPaths :: HierarchyZipper -> StoreOp [Text]
+subPaths :: HierarchyZipper -> StoreOp [Path]
 subPaths z =
-  ([""] ++) <$> concat <$> mapM (\child -> do
+  ((mempty :) . concat) <$> mapM (\child -> do
     z' <- down child z
     paths <- subPaths z'
-    return (map (\i -> Text.concat ["/", child, i]) paths)) (children z)
+    return (map (mappend (listToPath [child])) paths)) (children z)
 
 emptyHierarchy :: Hierarchy
 emptyHierarchy =
@@ -191,17 +192,17 @@ revisionsBetween from to = do
 hierarchyFromRevision :: Ref HistoryTag -> StoreOp Hierarchy
 hierarchyFromRevision = lastHierarchy . makeHistoryTree
 
-materializedView :: [Text] -> Hierarchy -> StoreOp (Hierarchy, JSON)
+materializedView :: Path -> Hierarchy -> StoreOp (Hierarchy, JSON)
 materializedView path hier = do
   z <- makeHierarchyZipper hier
   (z', json) <- getJSON z
   (z'', jsons) <- foldM (\(z, l) label -> do
     z' <- down label z
     (z'', json) <- getJSON z'
-    return (z'', json:l)) (z', [json]) path
+    return (z'', json:l)) (z', [json]) (pathToList path)
   return (solidifyHierarchyZipper z'', foldl1 deepMerge $ reverse jsons)
 
-nextMaterializedView :: Ref HistoryTag -> [Text] -> StoreOp (Maybe (JSON, Ref HistoryTag))
+nextMaterializedView :: Ref HistoryTag -> Path -> StoreOp (Maybe (JSON, Ref HistoryTag))
 nextMaterializedView ref path = do
   head <- getHeadBlockIfEq ref
   revisions <- revisionsBetween ref head
@@ -283,23 +284,23 @@ unionPlah a b =
     (HashMap.map OnlyLeft a)
     (HashMap.map OnlyRight b)
 
-collapse :: Ref HierarchyTag -> StoreOp [([Text], JSON)]
+collapse :: Ref HierarchyTag -> StoreOp [(Path, JSON)]
 collapse ref = do
   (json, table) <- loadHierarchy ref
-  let changes = if json == Aeson.object [] then [] else [([], json)]
+  let changes = if json == Aeson.object [] then [] else [(mempty, json)]
   l <- mapM (\(k, v) -> do
     dat <- collapse v
-    return (map (\(p, json) -> (k:p, json)) dat)) (HashMap.toList table)
+    return (map (\(p, json) -> (listToPath [k] `mappend` p, json)) dat)) (HashMap.toList table)
   return (changes ++ concat l)
 
-diff :: Ref HierarchyTag -> Ref HierarchyTag -> StoreOp [([Text], JSON, JSON)]
+diff :: Ref HierarchyTag -> Ref HierarchyTag -> StoreOp [(Path, JSON, JSON)]
 diff x y =
   if x == y then
     return []
   else do
     (xJson, xMap) <- loadHierarchy x
     (yJson, yMap) <- loadHierarchy y
-    let changes = if xJson == yJson then [([], xJson, yJson)] else []
+    let changes = if xJson == yJson then [(mempty, xJson, yJson)] else []
     let l = HashMap.toList (unionPlah xMap yMap)
     l' <- mapM (\(k, x) ->
       case x of
@@ -311,10 +312,10 @@ diff x y =
           return (map (\(path, json) -> (path, Aeson.object [], json)) l)
         Both x y -> do
           changes <- diff x y
-          return (map (\(a, b, c) -> (k:a, b, c)) changes)) l
+          return (map (\(a, b, c) -> (listToPath [k] `mappend` a, b, c)) changes)) l
     return (changes ++ concat l')
 
-loadInfo :: Ref HistoryTag -> StoreOp (Maybe (MetaInfo, Ref HistoryTag, [([Text], JSON, JSON)]))
+loadInfo :: Ref HistoryTag -> StoreOp (Maybe (MetaInfo, Ref HistoryTag, [(Path, JSON, JSON)]))
 loadInfo ref = do
   x <- loadHistory ref
   case x of
@@ -329,7 +330,7 @@ loadInfo ref = do
           d <- diff hier' hier
           return (Just (meta, prev, d))
 
-updateHierarchy :: MetaInfo -> [Text] -> JSON -> Ref HistoryTag -> StoreOp (Maybe (Ref HistoryTag))
+updateHierarchy :: MetaInfo -> Path -> JSON -> Ref HistoryTag -> StoreOp (Maybe (Ref HistoryTag))
 updateHierarchy meta parts json ref = do
   head <- getHead
   if head == ref then do
