@@ -103,9 +103,7 @@ site zk =
   fetchAt :: UTCTime -> Snap ()
   fetchAt ts = do
     ref <- runStoreOpSnap zk $ findActive ts
-    case ref of
-      Nothing -> writeText ""
-      Just ref' -> writeBS (unref ref')
+    writeBS (unref ref)
 
   recordToJSON :: Ref HistoryTag -> MetaInfo -> JSON
   recordToJSON ref (MetaInfo ts comment author) =

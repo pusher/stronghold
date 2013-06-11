@@ -247,19 +247,19 @@ loadHierarchy ref = do
   JSONData json <- load jsonref
   return (json, table)
 
-findActive :: UTCTime -> StoreOp (Maybe (Ref HistoryTag))
+findActive :: UTCTime -> StoreOp (Ref HistoryTag)
 findActive ts = do
   head <- getHead
   findActive' head
  where
-  findActive' :: Ref HistoryTag -> StoreOp (Maybe (Ref HistoryTag))
+  findActive' :: Ref HistoryTag -> StoreOp (Ref HistoryTag)
   findActive' ref = do
     dat <- loadHistory ref
     case dat of
-      Nothing -> return Nothing
+      Nothing -> return ref
       Just (MetaInfo ts' _ _, _, next) ->
         if ts > ts' then
-          return (Just ref)
+          return ref
         else
           findActive' next
 
