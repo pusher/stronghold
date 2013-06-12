@@ -10,3 +10,9 @@ executable stronghold
                        snap-server, snap-core, cereal, zookeeper, cryptohash,
                        base16-bytestring, transformers, unordered-containers,
                        hashable, time, stm, mtl
+
+executable wipe
+  ghc-options:         -threaded
+  main-is:             wipe.hs
+  build-depends:       base ==4.6.*, zookeeper, cryptohash, base16-bytestring,
+                       text, bytestring
