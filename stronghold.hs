@@ -71,7 +71,7 @@ runStoreOpSnap zk op = do
 
 site :: Zk.ZkInterface -> Snap ()
 site zk =
-  ifTop (writeBS "Stronghold say hi") <|>
+  ifTop (writeBS "Stronghold says hi") <|>
   route [
     ("head", fetchHead),
     ("versions", versions),
