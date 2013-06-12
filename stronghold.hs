@@ -156,7 +156,9 @@ site zk =
   getPath :: Snap Path
   getPath = do
     path <- (decodeUtf8 . rqPathInfo) <$> getRequest
-    if Text.last path == '/' then
+    if Text.null path then
+      return mempty
+     else if Text.last path == '/' then
       fail "couldn't construct path"
      else
       (return . listToPath . Text.splitOn "/") path
