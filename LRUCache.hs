@@ -10,9 +10,10 @@ import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 
 import Control.Applicative ((<$>), (<*>), (<|>))
-import Control.Concurrent.STM (STM, TVar, newTVar, readTVar, writeTVar, atomically)
 import Control.Monad (mapM, forM_, when)
 import Control.Exception (try, SomeException, throw)
+import Control.Concurrent.STM (STM, TVar, newTVar, readTVar, writeTVar, atomically, retry)
+import Control.Concurrent.Async (Async, wait, async)
 
 newtype MList a =
   MList (TVar (Maybe (MNode a, MNode a), Int))
@@ -153,35 +154,65 @@ readOnwards (Just x) = do
   xs <- readOnwards x'
   return (x:xs)
 
-data LRU k v = LRU !(k -> IO v) !Int !(MList (k, v)) !(TVar (HashMap k (MNode (k, v))))
+newtype TAsync a = TAsync (TVar (Maybe (Either (IO (Async a)) (Async a))))
+
+newTAsync :: IO a -> STM (TAsync a)
+newTAsync = fmap TAsync . newTVar . Just . Left . async
+
+startTAsync :: TAsync a -> IO (Async a)
+startTAsync (TAsync t) = do
+  t' <- atomically $ do
+    t' <- readTVar t >>= maybe retry return
+    case t' of
+      Left _ -> writeTVar t Nothing
+      Right _ -> return ()
+    return t'
+  case t' of
+    Left action -> do
+      result <- action
+      atomically $ writeTVar t (Just (Right result))
+      return result
+    Right result -> return result
+
+waitTAsync :: TAsync a -> IO a
+waitTAsync p = do
+  x <- startTAsync p
+  wait x
+
+data LRU k v = LRU !(k -> IO v) !Int !(MList (k, TAsync v)) !(TVar (HashMap k (MNode (k, TAsync v))))
 
 newLRU :: (Hashable k, Eq k) => (k -> IO v) -> Int -> IO (k -> IO v)
 newLRU action n = readLRU <$> (atomically (LRU action n <$> newList <*> newTVar HashMap.empty))
 
 readLRU :: (Hashable k, Eq k) => LRU k v -> k -> IO v
 readLRU lru@(LRU action _ list map) key = do
-  map' <- atomically (readTVar map)
-  case HashMap.lookup key map' of
-    Nothing -> do
-      value <- try $ action key
-      case value of
-        Left err -> throw (err :: SomeException)
-        Right value' ->
-          atomically $ do
-            node <- newNode (key, value')
-            pushFront node list
-            writeTVar map (HashMap.insert key node map')
-            popExcess lru
-            return value'
-    Just node -> do
-      value <- snd <$> atomically (getItem node)
-      atomically $ pushFront node list
-      return value
+  (b, t) <- atomically $ do
+    map' <- readTVar map
+    case HashMap.lookup key map' of
+      Nothing -> do
+        t <- newTAsync (action key)
+        node <- newNode (key, t)
+        pushFront node list
+        writeTVar map (HashMap.insert key node map')
+        popExcess lru
+        return (True, t)
+      Just node -> do
+        pushFront node list
+        ((,) False . snd) <$> getItem node
+  if b then do
+    x <- try $ waitTAsync t
+    case x of
+      Left err -> do
+        atomically $ modifyTVar map (HashMap.delete key)
+        throw (err :: SomeException)
+      Right x' -> return x'
+   else
+    waitTAsync t
  where
   modifyTVar :: TVar a -> (a -> a) -> STM ()
-  modifyTVar v f = do
-    v' <- readTVar v
-    writeTVar v (f v')
+  modifyTVar t f = do
+    x <- readTVar t
+    writeTVar t (f x)
 
   popExcess :: (Hashable k, Eq k) => LRU k v -> STM ()
   popExcess lru@(LRU _ n list map) = do
