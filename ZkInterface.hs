@@ -31,16 +31,18 @@ import Crypto.Hash.SHA1 (hash)
 
 import qualified Zookeeper as Zoo
 
-data ZkInterface = ZkInterface !(TVar (Maybe ByteString)) !Zoo.ZHandle
+import LRUCache (newLRU)
+
+data ZkInterface = ZkInterface (ByteString -> IO ByteString) !(TVar (Maybe ByteString)) !Zoo.ZHandle
 
 tryGetHeadSTM :: ZkInterface -> STM (Maybe ByteString)
-tryGetHeadSTM (ZkInterface head _) = readTVar head
+tryGetHeadSTM (ZkInterface _ head _) = readTVar head
 
 getHeadSTM :: ZkInterface -> STM ByteString
 getHeadSTM zk = tryGetHeadSTM zk >>= maybe retry return
 
 getHead :: ZkInterface -> MaybeT IO B.ByteString
-getHead (ZkInterface head _) = MaybeT (readTVarIO head)
+getHead (ZkInterface _ head _) = MaybeT (readTVarIO head)
 
 getHeadBlockIfEq :: ZkInterface -> B.ByteString -> MaybeT IO B.ByteString
 getHeadBlockIfEq zk ref = lift $ atomically $ do
@@ -51,7 +53,7 @@ getHeadBlockIfEq zk ref = lift $ atomically $ do
     return head
 
 fetchHeadAndWatch :: ZkInterface -> IO ()
-fetchHeadAndWatch (ZkInterface head zk) = do
+fetchHeadAndWatch (ZkInterface _ head zk) = do
   (dat, _) <- Zoo.get zk "/head" Zoo.Watch
   atomically $ writeTVar head dat
 
@@ -66,9 +68,14 @@ watcher _ _ zEventType zState path =
 newZkInterface :: String -> IO ZkInterface
 newZkInterface hostPort = do
   zk <- Zoo.init hostPort Nothing 10000
-  interface <- ZkInterface <$> newTVarIO Nothing <*> return zk
+  fetchNode' <- newLRU (fetchNode zk) 10000
+  interface <- ZkInterface fetchNode' <$> newTVarIO Nothing <*> return zk
   Zoo.setWatcher zk (Just (watcher interface))
   return interface
+ where
+  fetchNode :: Zoo.ZHandle -> ByteString -> IO ByteString
+  fetchNode zk ref =
+    fst <$> Zoo.get zk (getZkPath ref) Zoo.NoWatch >>= maybe (fail "no such node") return
 
 getZkPath :: B.ByteString -> String
 getZkPath = ("/ref/" ++) . BC.unpack
@@ -92,13 +99,13 @@ tryMaybeT :: Exception e => (e -> Bool) -> IO a -> MaybeT IO a
 tryMaybeT f a = lift (tryJust (guard . f) a) >>= either (const empty) (return)
 
 loadData :: ZkInterface -> B.ByteString -> MaybeT IO B.ByteString
-loadData (ZkInterface _ zk) ref =
-  -- fail on: no node, connection error or no data at the node
-  (join . fmap (MaybeT . return . fst) . tryMaybeT (isErrNoNode `orFn` isConnectionError))
-    (Zoo.get zk (getZkPath ref) Zoo.NoWatch)
+loadData (ZkInterface fetchNode _ zk) ref =
+  -- fail on: no node, connection error
+  -- TODO: handle the no data case better
+  tryMaybeT (isErrNoNode `orFn` isConnectionError) (fetchNode ref)
 
 storeData :: ZkInterface -> B.ByteString -> MaybeT IO B.ByteString
-storeData (ZkInterface _ zk) d = do
+storeData (ZkInterface _ _ zk) d = do
   let h = (Base16.encode . hash) d
   -- fail on connection errors, but ignore node exists errors
   tryMaybeT isConnectionError $ tryJust (guard . isErrNodeExists) $
@@ -106,12 +113,12 @@ storeData (ZkInterface _ zk) d = do
   return h
 
 hasReference :: ZkInterface -> B.ByteString -> MaybeT IO Bool
-hasReference (ZkInterface _ zk) ref =
+hasReference (ZkInterface _ _ zk) ref =
   (fmap (isJust . fst) . tryMaybeT (isErrNoNode `orFn` isConnectionError))
     (Zoo.get zk (getZkPath ref) Zoo.NoWatch)
 
 updateHead :: ZkInterface -> B.ByteString -> B.ByteString -> MaybeT IO Bool
-updateHead (ZkInterface _ zk) old new = do
+updateHead (ZkInterface _ _ zk) old new = do
   (dat, stat) <- tryMaybeT isConnectionError $ Zoo.get zk "/head" Zoo.NoWatch
   dat' <- MaybeT (return dat)
   if old == dat' then do
