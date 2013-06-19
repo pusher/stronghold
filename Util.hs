@@ -6,7 +6,7 @@ module Util (
   pathToText,
   pathToList,
   listToPath,
-  Path
+  Path (Path)
 ) where
 
 import Data.Monoid

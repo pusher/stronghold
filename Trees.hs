@@ -23,7 +23,7 @@ import Control.Monad (foldM)
 import StoredData
 import qualified ZkInterface as Zk
 
-import Util (deepMerge, Path, pathToList, listToPath)
+import Util (deepMerge, Path(Path), pathToList, listToPath)
 
 -- This is a little tricky, if you're having difficulty understanding, read up 
 -- on fixed point combinators and fixed point types.
@@ -337,71 +337,62 @@ loadInfo ref = do
           return (Just (meta, prev, d))
 
 updateHierarchy :: MetaInfo -> Path -> JSON -> Ref HistoryTag -> StoreOp (Maybe (Ref HistoryTag))
-updateHierarchy meta parts json ref = do
+updateHierarchy meta path json ref = do
   head <- getHead
-  if head == ref then do
-    (hist, headZipper) <- hierarchyZipperFromHistoryRef head
-    hist' <- makeUpdate hist headZipper
-    result <- updateHead head hist'
-    if result then
-      return (Just hist')
-     else do
-      head <- getHead
-      (_, refZipper) <- hierarchyZipperFromHistoryRef ref
-      attemptUpdate head refZipper
-   else do
-    (_, refZipper) <- hierarchyZipperFromHistoryRef ref
-    attemptUpdate head refZipper
- where
-  attemptUpdate :: Ref HistoryTag -> HierarchyZipper -> StoreOp (Maybe (Ref HistoryTag))
-  attemptUpdate head refZipper = do
-    (hist, headZipper) <- hierarchyZipperFromHistoryRef head
-    if comparePaths headZipper refZipper then do
-      hist' <- makeUpdate hist headZipper
-      result <- updateHead head hist'
-      if result then
-        return (Just hist')
-       else do
-        head <- getHead
-        attemptUpdate head refZipper
+  refTree <- getHierarchy ref
+  headTree <- getHierarchy head
+  equivalent <- check headTree refTree path
+  if equivalent then do
+    headTree' <- applyUpdate path json headTree
+    head' <- createHistory meta headTree' (makeHistoryTree head)
+    success <- updateHead head head'
+    if success then
+      return (Just head')
      else
-      return Nothing
+      updateHierarchy meta path json ref
+   else
+    return Nothing
+ where
+  getHierarchy :: Ref HistoryTag -> StoreOp (Maybe (Ref HierarchyTag))
+  getHierarchy ref = do
+    HistoryNode h <- load ref
+    case h of
+      Nil -> return Nothing
+      Cons (_, hier) _ -> return (Just hier)
 
-  makeUpdate :: History -> HierarchyZipper -> StoreOp (Ref HistoryTag)
-  makeUpdate hist headZipper = do
-    let headZipper' = setJSON' (refJSON json) headZipper
-    let hier = solidifyHierarchyZipper headZipper'
-    let hist' = addHistory meta hier hist
-    storeHistory hist'
+  check :: Maybe (Ref HierarchyTag) -> Maybe (Ref HierarchyTag) -> Path -> StoreOp Bool
+  check a b path =
+    if a == b then
+      return True
+    else
+      case (a, b, path) of
+        (Nothing, Nothing, _) -> return True
+        (_, _, Path []) -> return False
+        (Just a', Just b', Path (p:ps)) -> do
+          HierarchyNode (TreeNode aTable aJson) <- load a'
+          HierarchyNode (TreeNode bTable bJson) <- load b'
+          if aJson == bJson then
+            check (HashMap.lookup p aTable) (HashMap.lookup p bTable) (Path ps)
+           else
+            return False
+        (Just a', Nothing, _) -> check b a path
+        (Nothing, Just b', Path (p:ps)) -> do
+          HierarchyNode (TreeNode bTable bJson) <- load b'
+          if emptyObject bJson then
+            check Nothing (HashMap.lookup p bTable) (Path ps)
+           else
+            return False
 
-  hierarchyZipperFromHistoryRef :: Ref HistoryTag -> StoreOp (History, HierarchyZipper)
-  hierarchyZipperFromHistoryRef ref = do
-    let hist = makeHistoryTree ref
-    hier <- lastHierarchy hist
-    z <- makeHierarchyZipper hier
-    z' <- followPath parts z
-    return (hist, z')
+  applyUpdate :: Path -> JSON -> Maybe (Ref HierarchyTag) -> StoreOp Hierarchy
+  applyUpdate path json hier = do
+    let hier' =
+          case hier of
+            Nothing -> emptyHierarchy
+            Just hier' -> makeHierarchyTree hier'
+    z <- makeHierarchyZipper hier'
+    z' <- followPath path z
+    let z'' = setJSON' (refJSON json) z'
+    return $ solidifyHierarchyZipper z''
 
-  -- This is comparing two HierarchyZippers that are expected to be the result 
-  -- of "followPath path" on a reference.
-  -- This comparison is specific to updateHierarchy, think twice before using 
-  -- it more generally.
-  comparePaths :: HierarchyZipper -> HierarchyZipper -> Bool
-  comparePaths (HierarchyZipper (HierarchyCtx ctxa) hiera) (HierarchyZipper (HierarchyCtx ctxb) hierb) =
-    compareTreeNodes hiera hierb &&
-    (not $ any (\((namea, _, jsona), (nameb, _, jsonb)) ->
-      not (namea == nameb && jsona == jsonb)) $ zip ctxa ctxb)
-
-  compareTreeNodes :: TreeNode JSON' Text Hierarchy -> TreeNode JSON' Text Hierarchy -> Bool
-  compareTreeNodes (TreeNode itemsa jsona) (TreeNode itemsb jsonb) =
-    jsona == jsonb &&
-    compareHashMaps compareHierarchies itemsa itemsb
-
-  compareHierarchies :: Hierarchy -> Hierarchy -> Bool
-  compareHierarchies (Mu (Left a)) (Mu (Left b)) = a == b
-  compareHierarchies _ _ = False
-
-  compareHashMaps :: (Eq k, Hashable k) => (a -> b -> Bool) -> HashMap k a -> HashMap k b -> Bool
-  compareHashMaps f a b =
-    HashSet.fromList (HashMap.keys a) == HashSet.fromList (HashMap.keys b) &&
-    (not $ any (\(k, v) -> not $ f v (fromJust (HashMap.lookup k b))) (HashMap.toList a))
+  createHistory :: MetaInfo -> Hierarchy -> History -> StoreOp (Ref HistoryTag)
+  createHistory meta hier hist = storeHistory (addHistory meta hier hist)
