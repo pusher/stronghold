@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, DataKinds, KindSignatures, OverloadedStrings, ScopedTypeVariables #-}
+{-# LANGUAGE GADTs, DataKinds, KindSignatures, OverloadedStrings, ScopedTypeVariables, StandaloneDeriving #-}
 module StoredData where
 
 {-
@@ -31,7 +31,7 @@ import Util (integerFromUTC)
 
 type JSON = Aeson.Value
 
-data MetaInfo = MetaInfo UTCTime Text Text -- timestamp, comment, author
+data MetaInfo = MetaInfo UTCTime Text Text deriving Show -- timestamp, comment, author
 
 instance Aeson.ToJSON MetaInfo where
   toJSON (MetaInfo ts comment author) =
@@ -63,13 +63,18 @@ instance TagClass HierarchyTag where
 instance TagClass HistoryTag where
   tag = HistoryTag'
 
-data TreeNode x k v = TreeNode (HashMap k v) x
-data ListNode x r = Nil | Cons x r
+data TreeNode x k v = TreeNode (HashMap k v) x deriving Show
+data ListNode x r = Nil | Cons x r deriving Show
 
 data Data :: Tag -> * where
   JSONData :: JSON -> Data JSONTag
   HierarchyNode :: TreeNode (Ref JSONTag) Text (Ref HierarchyTag) -> Data HierarchyTag
   HistoryNode :: ListNode (MetaInfo, Ref HierarchyTag) (Ref HistoryTag) -> Data HistoryTag
+
+instance Show (Data t) where
+  show (JSONData json) = show json
+  show (HierarchyNode node) = show node
+  show (HistoryNode node) = show node
 
 type JSONData = Data JSONTag
 type HierarchyNode = Data HierarchyTag
@@ -161,6 +166,9 @@ makeRef r = Ref ((fst . Base16.decode) r)
 
 unref :: Ref t -> ByteString
 unref (Ref r) = Base16.encode r
+
+instance Show (Ref t) where
+  show = show . unref
 
 emptyObjectHash :: ByteString
 emptyObjectHash = hash (encode (JSONData (Aeson.object [])))

@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, DataKinds, OverloadedStrings #-}
+{-# LANGUAGE GADTs, DataKinds, OverloadedStrings, StandaloneDeriving, FlexibleInstances #-}
 module Trees where
 
 {-
@@ -37,6 +37,12 @@ newtype Mu t m = Mu (Either t (m (Mu t m)))
 type JSON' = Either (Ref JSONTag) JSON
 type Hierarchy = Mu (Ref HierarchyTag) (TreeNode JSON' Text)
 type History = Mu (Ref HistoryTag) (ListNode (MetaInfo, Hierarchy))
+
+instance Show (Mu (Ref HierarchyTag) (TreeNode JSON' Text)) where
+  show (Mu t) = show t
+
+instance Show (Mu (Ref HistoryTag) (ListNode (MetaInfo, Hierarchy))) where
+  show (Mu t) = show t
 
 makeHistoryTree :: Ref HistoryTag -> History
 makeHistoryTree = Mu . Left
@@ -97,8 +103,8 @@ derefHierarchy (Mu (Left r)) = do
   HierarchyNode (TreeNode l json) <- load r
   return $ TreeNode (HashMap.map (\v -> Mu (Left v)) l) (Left json)
 
-data HierarchyCtx = HierarchyCtx [(Text, HashMap Text Hierarchy, JSON')]
-data HierarchyZipper = HierarchyZipper HierarchyCtx (TreeNode JSON' Text Hierarchy)
+data HierarchyCtx = HierarchyCtx [(Text, HashMap Text Hierarchy, JSON')] deriving Show
+data HierarchyZipper = HierarchyZipper HierarchyCtx (TreeNode JSON' Text Hierarchy) deriving Show
 
 makeHierarchyZipper :: Hierarchy -> StoreOp HierarchyZipper
 makeHierarchyZipper hier = HierarchyZipper (HierarchyCtx []) <$> derefHierarchy hier
