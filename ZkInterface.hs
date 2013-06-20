@@ -68,8 +68,8 @@ watcher _ _ zEventType zState path =
 newZkInterface :: String -> IO ZkInterface
 newZkInterface hostPort = do
   zk <- Zoo.init hostPort Nothing 10000
-  --fetchNode' <- newLRU (fetchNode zk) 10000
-  interface <- ZkInterface (fetchNode zk) <$> newTVarIO Nothing <*> return zk
+  fetchNode' <- newLRU (fetchNode zk) 10000
+  interface <- ZkInterface fetchNode' <$> newTVarIO Nothing <*> return zk
   Zoo.setWatcher zk (Just (watcher interface))
   return interface
  where

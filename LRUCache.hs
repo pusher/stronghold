@@ -88,7 +88,7 @@ link node@(MNode node') p n list@(MList list') = do
                       (first', last')
     writeTVar list' (Just y', c+1)
     writeTVar node' (x, p, n, Just list)
-   else do
+   else
     fail "can only link neighbouring nodes"
 
 unlink :: MNode a -> STM ()
@@ -116,13 +116,9 @@ last (MList l) = (fmap snd . fst) <$> readTVar l
 
 pushFront :: MNode a -> MList a -> STM ()
 pushFront node l = do
+  unlink node
   f <- first l
   link node Nothing f l
-
-pushBack :: MNode a -> MList a -> STM ()
-pushBack node l = do
-  b <- last l
-  link node b Nothing l
 
 popFront :: MList a -> STM (Maybe (MNode a))
 popFront x = do
@@ -139,20 +135,24 @@ popBack x = do
 size :: MList a -> STM Int
 size (MList l) = snd <$> readTVar l
 
-readList :: MList a -> STM [MNode a]
-readList l = do
+readList :: MList a -> Int -> STM [MNode a]
+readList l n = do
   f <- first l
-  readOnwards f
+  readOnwards f n
 
-readListValues :: MList a -> STM [a]
-readListValues l = readList l >>= mapM getItem
+readListValues :: MList a -> Int -> STM [a]
+readListValues l n = readList l n >>= mapM getItem
 
-readOnwards :: Maybe (MNode a) -> STM [(MNode a)]
-readOnwards Nothing = return []
-readOnwards (Just x) = do
-  x' <- next (Just x)
-  xs <- readOnwards x'
-  return (x:xs)
+readOnwards :: Maybe (MNode a) -> Int -> STM [(MNode a)]
+readOnwards node n =
+  readOnwards' node n []
+ where
+  readOnwards' :: Maybe (MNode a) -> Int -> [MNode a] -> STM [MNode a]
+  readOnwards' Nothing _ xs = return xs
+  readOnwards' _ 0 xs = return xs
+  readOnwards' (Just x) n xs = do
+    x' <- next (Just x)
+    readOnwards' x' (n-1) (x:xs)
 
 newtype TAsync a = TAsync (TVar (Maybe (Either (IO (Async a)) (Async a))))
 
@@ -185,15 +185,15 @@ newLRU :: (Hashable k, Eq k) => (k -> IO v) -> Int -> IO (k -> IO v)
 newLRU action n = readLRU <$> (atomically (LRU action n <$> newList <*> newTVar HashMap.empty))
 
 readLRU :: (Hashable k, Eq k) => LRU k v -> k -> IO v
-readLRU lru@(LRU action _ list map) key = do
+readLRU lru@(LRU action _ list m) key = do
   (b, t) <- atomically $ do
-    map' <- readTVar map
-    case HashMap.lookup key map' of
+    m' <- readTVar m
+    case HashMap.lookup key m' of
       Nothing -> do
         t <- newTAsync (action key)
         node <- newNode (key, t)
         pushFront node list
-        writeTVar map (HashMap.insert key node map')
+        writeTVar m (HashMap.insert key node m')
         popExcess lru
         return (True, t)
       Just node -> do
@@ -203,7 +203,7 @@ readLRU lru@(LRU action _ list map) key = do
     x <- try $ waitTAsync t
     case x of
       Left err -> do
-        atomically $ modifyTVar map (HashMap.delete key)
+        atomically $ modifyTVar m (HashMap.delete key)
         throw (err :: SomeException)
       Right x' -> return x'
    else
