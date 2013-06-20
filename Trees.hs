@@ -366,7 +366,6 @@ updateHierarchy meta path json ref = do
       return True
     else
       case (a, b, path) of
-        (Nothing, Nothing, _) -> return True
         (_, _, Path []) -> return False
         (Just a', Just b', Path (p:ps)) -> do
           HierarchyNode (TreeNode aTable aJson) <- load a'
