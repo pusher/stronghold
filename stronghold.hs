@@ -5,6 +5,8 @@ module Main where
   This file should only define Stronghold's API.
 -}
 
+import Prelude hiding (mapM)
+
 import Data.Monoid (mempty)
 import Data.Maybe (fromJust, listToMaybe)
 import Data.ByteString (ByteString)
@@ -15,6 +17,7 @@ import Data.Text.Encoding (decodeUtf8)
 import qualified Data.Aeson as Aeson
 import qualified Data.HashMap.Strict as HashMap
 import Data.Time.Clock (getCurrentTime, UTCTime)
+import Data.Traversable (mapM)
 
 import Control.Applicative ((<$>), (<|>), empty)
 import Control.Monad (foldM, join)
@@ -51,22 +54,19 @@ errorMessage BadRequest = "Bad Request"
 errorMessage Conflict = "Conflict"
 errorMessage UnprocessableEntity = "Unprocessable Entity"
 
-sendError :: HTTPStatus -> Text -> Snap ()
+sendError :: HTTPStatus -> Text -> Snap a
 sendError status body = do
   modifyResponse $ setResponseStatus (errorCode status) (errorMessage status)
   writeText body
   writeText "\n"
-
-finish :: Snap a
-finish = getResponse >>= finishWith
+  getResponse >>= finishWith
 
 runStoreOpSnap :: Zk.ZkInterface -> StoreOp a -> Snap a
 runStoreOpSnap zk op = do
   result <- liftIO $ runStoreOp' zk op
   case result of
-    Nothing -> do
+    Nothing ->
       sendError InternalServerError "There was some Zookeeper related error"
-      finish
     Just x -> return x
 
 site :: Zk.ZkInterface -> Snap ()
@@ -78,22 +78,26 @@ site zk =
     (":version/", withVersion)
    ]
  where
+  createRef' :: ByteString -> Snap (Ref HistoryTag)
+  createRef' b = do
+    b' <- runStoreOpSnap zk $ createRef b
+    case b' of
+      Nothing -> sendError UnprocessableEntity "Invalid reference"
+      Just b'' -> return b''
+
   withVersion :: Snap ()
   withVersion = do
     Just version <- getParam "version"
-    ref <- runStoreOpSnap zk (createRef version)
-    case ref of
-      Just ref' ->
-        let hist = makeHistoryTree ref' in
-          route [
-            ("tree/paths", paths hist),
-            ("tree/materialized", materialized hist),
-            ("tree/peculiar", peculiar hist),
-            ("change", info ref'),
-            ("next/tree/materialized", next ref'),
-            ("update", update ref')
-           ]
-      Nothing -> sendError UnprocessableEntity "Invalid reference"
+    ref <- createRef' version
+    let hist = makeHistoryTree ref
+    route [
+      ("tree/paths", paths hist),
+      ("tree/materialized", materialized hist),
+      ("tree/peculiar", peculiar hist),
+      ("change", info ref),
+      ("next/tree/materialized", next ref),
+      ("update", update ref)
+     ]
 
   fetchHead :: Snap ()
   fetchHead = ifTop $ method GET $ do
@@ -114,33 +118,28 @@ site zk =
       ("author", Aeson.toJSON author)
      ]
 
-  fetchN :: Maybe Int -> Ref HistoryTag -> Snap ()
-  fetchN limit ref = do
-    result <- runStoreOpSnap zk $ fetchHistory limit ref
-    let result' = map (uncurry recordToJSON) result
-    writeLBS $ Aeson.encode result'
-
-  maybeRead :: Read a => String -> Maybe a
-  maybeRead = fmap fst . listToMaybe . reads
+  maybeReadBS :: Read a => ByteString -> Maybe a
+  maybeReadBS = fmap fst . listToMaybe . reads . unpack . decodeUtf8
 
   -- query the set of versions
   versions :: Snap ()
   versions = ifTop $ method GET $ do
-    ts <- getParam "at"
-    case ts of
-      Just ts' -> do
-        ts'' <- (maybe empty return . fmap utcFromInteger . maybeRead . unpack . decodeUtf8) ts'
-        fetchAt ts''
-      Nothing -> do
-        last <- getParam "last"
-        last' <- maybe empty return last
-        last'' <- runStoreOpSnap zk $ createRef last'
-        case last'' of
-          Just last''' -> do
-            size <- getParam "size"
-            let size' = (join  . fmap (maybeRead . unpack . decodeUtf8)) size
-            fetchN size' last'''
-          Nothing -> sendError UnprocessableEntity "Invalid reference"
+    at <- getParam "at"
+    last <- getParam "last"
+    size <- getParam "size"
+
+    last' <- mapM createRef' last
+    let at' = (join . fmap (fmap utcFromInteger . maybeReadBS)) at
+    let size' = (join . fmap maybeReadBS) size
+
+    case (at', last', size') of
+      (Just ts, Nothing, Nothing) -> do
+        fetchAt ts
+      (Nothing, Just last'', _) -> do
+        result <- runStoreOpSnap zk $ fetchHistory size' last''
+        let result' = map (uncurry recordToJSON) result
+        writeLBS $ Aeson.encode result'
+      (_, _, _) -> empty
 
   paths :: History -> Snap ()
   paths hist = ifTop $ method GET $ do
