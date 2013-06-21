@@ -137,9 +137,6 @@ top z =
   else
     top (up z)
 
-getJSON' :: HierarchyZipper -> JSON'
-getJSON' (HierarchyZipper _ (TreeNode _ json)) = json
-
 getJSON :: HierarchyZipper -> StoreOp (HierarchyZipper, JSON)
 getJSON (HierarchyZipper hierCtx (TreeNode children json')) = do
   json <- derefJSON json'
@@ -354,11 +351,7 @@ updateHierarchy meta path json ref = do
     return Nothing
  where
   getHierarchy :: Ref HistoryTag -> StoreOp (Maybe (Ref HierarchyTag))
-  getHierarchy ref = do
-    HistoryNode h <- load ref
-    case h of
-      Nil -> return Nothing
-      Cons (_, hier) _ -> return (Just hier)
+  getHierarchy = fmap (fmap (\(_, hier, _) -> hier)) . loadHistory
 
   check :: Maybe (Ref HierarchyTag) -> Maybe (Ref HierarchyTag) -> Path -> StoreOp Bool
   check a b path =
