@@ -266,6 +266,9 @@ findActive ts = do
         else
           findActive' next
 
+fetchMetaInfo :: Ref HistoryTag -> StoreOp (Maybe MetaInfo)
+fetchMetaInfo = fmap (fmap (\(meta, _, _) -> meta)) . loadHistory
+
 fetchHistory :: Maybe Int -> Ref HistoryTag -> StoreOp [(Ref HistoryTag, MetaInfo)]
 fetchHistory limit ref =
   fmap reverse (fetchHistory' limit ref)
@@ -280,8 +283,8 @@ fetchHistory limit ref =
 
 data AtLeastOneOf a b = OnlyLeft a | OnlyRight b | Both a b
 
-unionPlah :: (Hashable k, Ord k) => HashMap k a -> HashMap k b -> HashMap k (AtLeastOneOf a b)
-unionPlah a b =
+unionAB :: (Hashable k, Ord k) => HashMap k a -> HashMap k b -> HashMap k (AtLeastOneOf a b)
+unionAB a b =
   HashMap.unionWith
     (\(OnlyLeft x) (OnlyRight y) -> Both x y)
     (HashMap.map OnlyLeft a)
@@ -304,7 +307,7 @@ diff x y =
     (xJson, xMap) <- loadHierarchy x
     (yJson, yMap) <- loadHierarchy y
     let changes = if xJson == yJson then [(mempty, xJson, yJson)] else []
-    let l = HashMap.toList (unionPlah xMap yMap)
+    let l = HashMap.toList (unionAB xMap yMap)
     l' <- mapM (\(k, x) ->
       case x of
         OnlyLeft x -> do

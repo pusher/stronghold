@@ -19,7 +19,7 @@ import qualified Data.HashMap.Strict as HashMap
 import Data.Time.Clock (getCurrentTime, UTCTime)
 import Data.Traversable (mapM)
 
-import Control.Applicative ((<$>), (<|>), empty)
+import Control.Applicative ((<$>), (<*>), (<|>), empty)
 import Control.Monad (foldM, join)
 import Control.Monad.IO.Class (liftIO)
 import Control.Exception (tryJust, try, SomeException)
@@ -34,7 +34,7 @@ import System.Environment (getArgs)
 import qualified ZkInterface as Zk
 import StoredData
 import Trees
-import Util (deepMerge, utcFromInteger, Path, pathToText, listToPath)
+import Util (deepMerge, integerFromUTC, utcFromInteger, Path, pathToText, listToPath)
 
 data HTTPStatus =
   BadRequest |
@@ -113,7 +113,7 @@ site zk =
   recordToJSON ref (MetaInfo ts comment author) =
     Aeson.object [
       ("revision", Aeson.toJSON (unref ref)),
-      ("timestamp", Aeson.toJSON ts),
+      ("timestamp", Aeson.toJSON $ integerFromUTC ts),
       ("comment", Aeson.toJSON comment),
       ("author", Aeson.toJSON author)
      ]
@@ -125,21 +125,42 @@ site zk =
   versions :: Snap ()
   versions = ifTop $ method GET $ do
     at <- getParam "at"
+
     last <- getParam "last"
     size <- getParam "size"
 
+    first <- getParam "first"
+    limit <- getParam "limit"
+
+    first' <- mapM createRef' first
     last' <- mapM createRef' last
+    limit' <- mapM createRef' limit
     let at' = (join . fmap (fmap utcFromInteger . maybeReadBS)) at
     let size' = (join . fmap maybeReadBS) size
 
-    case (at', last', size') of
-      (Just ts, Nothing, Nothing) -> do
+    case (at', last', size', first', limit') of
+      (Just ts, Nothing, Nothing, Nothing, Nothing) -> do
         fetchAt ts
-      (Nothing, Just last'', _) -> do
+      (Nothing, Just last'', _, Nothing, Nothing) -> do
         result <- runStoreOpSnap zk $ fetchHistory size' last''
         let result' = map (uncurry recordToJSON) result
         writeLBS $ Aeson.encode result'
-      (_, _, _) -> empty
+      (Nothing, Nothing, Just size'', Just first'', Just limit'') ->
+        if first'' == limit'' then
+          writeLBS $ Aeson.encode ([] :: [JSON])
+         else do
+          revisions <- runStoreOpSnap zk $ revisionsBetween first'' limit''
+          let err = sendError UnprocessableEntity "first is not in limit's history"
+          revisions' <- maybe err return revisions
+          let revisions'' = take size'' revisions'
+          metas <- runStoreOpSnap zk $ mapM fetchMetaInfo revisions''
+          let metas' = sequence metas
+          let err' = sendError UnprocessableEntity "can't process the sentinel history node"
+          metas'' <- maybe err' return metas'
+          let result = zip revisions'' metas''
+          let result' = map (uncurry recordToJSON) result
+          writeLBS $ Aeson.encode result'
+      (_, _, _, _, _) -> empty
 
   paths :: History -> Snap ()
   paths hist = ifTop $ method GET $ do
@@ -217,19 +238,18 @@ site zk =
   resultToMaybe (Aeson.Success x) = Just x
   resultToMaybe _ = Nothing
 
-  jsonLookupText :: Text -> Aeson.Object -> Maybe Text
-  jsonLookupText key obj = do
+  jsonLookup :: Aeson.FromJSON a => Text -> Aeson.Object -> Maybe a
+  jsonLookup key obj = do
     field <- HashMap.lookup key obj
     resultToMaybe $ Aeson.fromJSON field
 
   retrieveUpdateInfo :: JSON -> Maybe (Text, Text, JSON)
   retrieveUpdateInfo val = do
     obj <- resultToMaybe $ Aeson.fromJSON val
-    author <- jsonLookupText "author" obj
-    comment <- jsonLookupText "comment" obj
-    dat <- HashMap.lookup "data" obj
-    Aeson.Object _ <- resultToMaybe $ Aeson.fromJSON dat -- make sure that data is an object
-    return (author, comment, dat)
+    dat <- jsonLookup "data" obj
+    -- ensure that data is an object
+    resultToMaybe $ Aeson.fromJSON dat :: Maybe Aeson.Object
+    (,,) <$> jsonLookup "author" obj <*> jsonLookup "comment" obj <*> return dat
 
   update :: Ref HistoryTag -> Snap ()
   update ref = method POST $ do
