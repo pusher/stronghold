@@ -114,8 +114,9 @@ storeData (ZkInterface _ _ zk) d = do
 
 hasReference :: ZkInterface -> B.ByteString -> MaybeT IO Bool
 hasReference (ZkInterface _ _ zk) ref =
-  (fmap (isJust . fst) . tryMaybeT (isErrNoNode `orFn` isConnectionError))
-    (Zoo.get zk (getZkPath ref) Zoo.NoWatch)
+  (fmap (either (const False) (isJust . fst)) .
+   tryMaybeT isConnectionError .
+   tryJust (guard . isErrNoNode)) (Zoo.get zk (getZkPath ref) Zoo.NoWatch)
 
 updateHead :: ZkInterface -> B.ByteString -> B.ByteString -> MaybeT IO Bool
 updateHead (ZkInterface _ _ zk) old new = do
