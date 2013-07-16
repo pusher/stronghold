@@ -109,17 +109,28 @@ site zk =
     ref <- runStoreOpSnap zk $ findActive ts
     writeBS (unref ref)
 
-  recordToJSON :: Ref HistoryTag -> MetaInfo -> JSON
-  recordToJSON ref (MetaInfo ts comment author) =
+  recordToJSON :: Ref HistoryTag -> MetaInfo -> [Path] -> JSON
+  recordToJSON ref (MetaInfo ts comment author) paths =
     Aeson.object [
       ("revision", Aeson.toJSON (unref ref)),
       ("timestamp", Aeson.toJSON $ integerFromUTC ts),
       ("comment", Aeson.toJSON comment),
-      ("author", Aeson.toJSON author)
+      ("author", Aeson.toJSON author),
+      ("paths", Aeson.toJSON (map pathToText paths))
      ]
 
   maybeReadBS :: Read a => ByteString -> Maybe a
   maybeReadBS = fmap fst . listToMaybe . reads . unpack . decodeUtf8
+
+  summarizeRevisions :: [Ref HistoryTag] -> Snap JSON
+  summarizeRevisions revisions = do
+    infos <- runStoreOpSnap zk $ mapM loadInfo revisions
+    let err = sendError UnprocessableEntity "can't process the sentinel history node"
+    infos' <- maybe err return (sequence infos)
+    let result = zip revisions infos'
+    let paths = map (\(path, _, _) -> path)
+    let result' = map (\(rev, (meta, _, changes)) -> recordToJSON rev meta (paths changes)) result
+    return $ Aeson.toJSON result'
 
   -- query the set of versions
   versions :: Snap ()
@@ -142,9 +153,9 @@ site zk =
       (Just ts, Nothing, Nothing, Nothing, Nothing) -> do
         fetchAt ts
       (Nothing, Just last'', _, Nothing, Nothing) -> do
-        result <- runStoreOpSnap zk $ fetchHistory size' last''
-        let result' = map (uncurry recordToJSON) result
-        writeLBS $ Aeson.encode result'
+        revisions <- runStoreOpSnap zk $ revisionsBefore size' last''
+        result <- summarizeRevisions revisions
+        writeLBS $ Aeson.encode result
       (Nothing, Nothing, Just size'', Just first'', Just limit'') ->
         if first'' == limit'' then
           writeLBS $ Aeson.encode ([] :: [JSON])
@@ -153,13 +164,8 @@ site zk =
           let err = sendError UnprocessableEntity "first is not in limit's history"
           revisions' <- maybe err return revisions
           let revisions'' = take size'' revisions'
-          metas <- runStoreOpSnap zk $ mapM fetchMetaInfo revisions''
-          let metas' = sequence metas
-          let err' = sendError UnprocessableEntity "can't process the sentinel history node"
-          metas'' <- maybe err' return metas'
-          let result = zip revisions'' metas''
-          let result' = map (uncurry recordToJSON) result
-          writeLBS $ Aeson.encode result'
+          result <- summarizeRevisions revisions''
+          writeLBS $ Aeson.encode result
       (_, _, _, _, _) -> empty
 
   paths :: History -> Snap ()

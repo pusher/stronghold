@@ -175,6 +175,18 @@ lastHierarchy hist = do
 addHistory :: MetaInfo -> Hierarchy -> History -> History
 addHistory meta hier hist = refHistory (Cons (meta, hier) hist)
 
+revisionsBefore :: Maybe Int -> Ref HistoryTag -> StoreOp [Ref HistoryTag]
+revisionsBefore limit ref =
+  fmap reverse (revisionsBefore' limit ref)
+ where
+  revisionsBefore' :: Maybe Int -> Ref HistoryTag -> StoreOp [Ref HistoryTag]
+  revisionsBefore' (Just 0) _ = return []
+  revisionsBefore' limit ref = do
+    ref' <- loadHistory ref
+    case ref' of
+      Nothing -> return []
+      Just (_, _, next) -> (ref :) <$> revisionsBefore' (fmap (flip (-) 1) limit) next
+
 -- from < x <= to
 revisionsBetween :: Ref HistoryTag -> Ref HistoryTag -> StoreOp (Maybe [Ref HistoryTag])
 revisionsBetween from to = do
@@ -266,21 +278,6 @@ findActive ts = do
         else
           findActive' next
 
-fetchMetaInfo :: Ref HistoryTag -> StoreOp (Maybe MetaInfo)
-fetchMetaInfo = fmap (fmap (\(meta, _, _) -> meta)) . loadHistory
-
-fetchHistory :: Maybe Int -> Ref HistoryTag -> StoreOp [(Ref HistoryTag, MetaInfo)]
-fetchHistory limit ref =
-  fmap reverse (fetchHistory' limit ref)
- where
-  fetchHistory' :: Maybe Int -> Ref HistoryTag -> StoreOp [(Ref HistoryTag, MetaInfo)]
-  fetchHistory' (Just 0) _ = return []
-  fetchHistory' limit ref = do
-    ref' <- loadHistory ref
-    case ref' of
-      Nothing -> return []
-      Just (meta, _, next) -> ((ref, meta) :) <$> fetchHistory' (fmap (flip (-) 1) limit) next
-
 data AtLeastOneOf a b = OnlyLeft a | OnlyRight b | Both a b
 
 unionAB :: (Hashable k, Ord k) => HashMap k a -> HashMap k b -> HashMap k (AtLeastOneOf a b)
@@ -306,7 +303,7 @@ diff x y =
   else do
     (xJson, xMap) <- loadHierarchy x
     (yJson, yMap) <- loadHierarchy y
-    let changes = if xJson == yJson then [(mempty, xJson, yJson)] else []
+    let changes = if xJson == yJson then [] else [(mempty, xJson, yJson)]
     let l = HashMap.toList (unionAB xMap yMap)
     l' <- mapM (\(k, x) ->
       case x of
