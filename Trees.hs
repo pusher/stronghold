@@ -276,7 +276,7 @@ fetchHistory limit ref =
     ref' <- loadHistory ref
     case ref' of
       Nothing -> return []
-      Just (meta, _, next) -> ((ref, meta) :) <$> fetchHistory (fmap (flip (-) 1) limit) next
+      Just (meta, _, next) -> ((ref, meta) :) <$> fetchHistory' (fmap (flip (-) 1) limit) next
 
 data AtLeastOneOf a b = OnlyLeft a | OnlyRight b | Both a b
 
