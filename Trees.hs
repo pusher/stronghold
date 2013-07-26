@@ -278,7 +278,7 @@ findActive ts = do
         else
           findActive' next
 
-data AtLeastOneOf a b = OnlyLeft a | OnlyRight b | Both a b
+data AtLeastOneOf a b = OnlyLeft a | OnlyRight b | Both a b deriving Show
 
 unionAB :: (Hashable k, Ord k) => HashMap k a -> HashMap k b -> HashMap k (AtLeastOneOf a b)
 unionAB a b =
@@ -309,10 +309,10 @@ diff x y =
       case x of
         OnlyLeft x -> do
           l <- collapse x
-          return (map (\(path, json) -> (path, json, Aeson.object [])) l)
+          return (map (\(path, json) -> (listToPath [k] `mappend` path, json, Aeson.object [])) l)
         OnlyRight x -> do
           l <- collapse x
-          return (map (\(path, json) -> (path, Aeson.object [], json)) l)
+          return (map (\(path, json) -> (listToPath [k] `mappend` path, Aeson.object [], json)) l)
         Both x y -> do
           changes <- diff x y
           return (map (\(a, b, c) -> (listToPath [k] `mappend` a, b, c)) changes)) l
