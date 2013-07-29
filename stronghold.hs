@@ -279,10 +279,10 @@ site zk =
 
 main :: IO ()
 main = do
-  [portString] <- getArgs
-  start (read portString)
+  [portString, zkHostPort] <- getArgs
+  start (read portString) zkHostPort
 
-start :: Int -> IO ()
-start port = do
-  zk <- Zk.newZkInterface "localhost:2181"
+start :: Int -> String -> IO ()
+start port zkHostPort = do
+  zk <- Zk.newZkInterface zkHostPort
   simpleHttpServe (setPort port mempty :: Config Snap ()) (site zk)
