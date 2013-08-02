@@ -7,9 +7,10 @@ module Main where
 
 import Prelude hiding (mapM)
 
-import Data.Monoid (mempty)
+import Data.Monoid (mempty, mconcat, Endo(Endo), appEndo)
 import Data.Maybe (fromJust, listToMaybe)
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Base16 as Base16
 import Data.Text (Text, unpack)
 import qualified Data.Text as Text
@@ -30,6 +31,7 @@ import Snap.Http.Server
 import Crypto.Hash.SHA1 (hash)
 
 import System.Environment (getArgs)
+import System.IO (Handle, stdout, stderr)
 
 import qualified ZkInterface as Zk
 import StoredData
@@ -277,6 +279,12 @@ site zk =
               Nothing ->
                 sendError Conflict "The update was aborted because an ancestor or descendent has changed"
 
+writeTo :: Handle -> ConfigLog
+writeTo handle = ConfigIoLog (BC.hPutStrLn handle)
+
+applyAll :: [a -> a] -> a -> a
+applyAll = appEndo . mconcat . map Endo
+
 main :: IO ()
 main = do
   [portString, zkHostPort] <- getArgs
@@ -285,4 +293,10 @@ main = do
 start :: Int -> String -> IO ()
 start port zkHostPort = do
   zk <- Zk.newZkInterface zkHostPort
-  simpleHttpServe (setPort port mempty :: Config Snap ()) (site zk)
+  let config =
+        applyAll [
+          setPort port,
+          setAccessLog (writeTo stdout),
+          setErrorLog (writeTo stderr)
+        ] defaultConfig
+  simpleHttpServe (config :: Config Snap ()) (site zk)
