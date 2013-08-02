@@ -209,19 +209,20 @@ site zk =
         ("new", new)
       ])
 
-  formatInfo :: (MetaInfo, Ref HistoryTag, [(Path, JSON, JSON)]) -> JSON
-  formatInfo (meta, previous, changes) =
+  formatInfo :: Maybe (MetaInfo, Ref HistoryTag, [(Path, JSON, JSON)]) -> JSON
+  formatInfo (Just (meta, previous, changes)) =
     deepMerge
       (Aeson.toJSON meta)
       (Aeson.object [
         ("previous", Aeson.toJSON (unref previous)),
         ("changes", formatChanges changes)
       ])
+  formatInfo Nothing = Aeson.object [("previous", Aeson.Null)]
 
   info :: Ref HistoryTag -> Snap ()
   info ref = ifTop $ method GET $ do
     result <- runStoreOpSnap zk $ loadInfo ref
-    writeLBS $ Aeson.encode $ fmap formatInfo result
+    writeLBS $ Aeson.encode $ formatInfo result
 
   materialized :: History -> Snap ()
   materialized hist = method GET $ do
