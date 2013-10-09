@@ -24,6 +24,7 @@ import Control.Applicative ((<$>), (<*>), (<|>), empty)
 import Control.Monad (foldM, join)
 import Control.Monad.IO.Class (liftIO)
 import Control.Exception (tryJust, try, SomeException)
+import Control.Concurrent (throwTo, myThreadId)
 
 import Snap.Core
 import Snap.Http.Server
@@ -293,7 +294,8 @@ main = do
 
 start :: Int -> String -> IO ()
 start port zkHostPort = do
-  zk <- Zk.newZkInterface zkHostPort
+  thread <- myThreadId
+  zk <- Zk.newZkInterface zkHostPort (throwTo thread)
   let config =
         applyAll [
           setPort port,
