@@ -5,3 +5,9 @@ https://github.com/motus/haskell-zookeeper-client . Then:
 
     cabal configure
     cabal build
+
+# Invocation
+
+```
+stronghold <port> <zk address>
+```
