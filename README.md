@@ -1,7 +1,17 @@
 # Build instructions
 
-Install dependencies including zookeeper bindings from: 
-https://github.com/motus/haskell-zookeeper-client . Then:
+## Installing zookeeper on OSX
+
+Using homebrew (--c installs C headers):
+
+    brew install zookeeper --c
+
+## Installing dependencies
+
+Install dependencies including zookeeper bindings from:
+https://github.com/motus/haskell-zookeeper-client . Remember to pass `--extra-include-dirs=/usr/local/Cellar/zookeeper/ZOOKEEPER_VERSION/include/zookeeper/` to `cabal install` when building haskell-zookeeper-client.
+
+Then:
 
     cabal configure
     cabal build
