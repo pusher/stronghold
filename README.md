@@ -25,11 +25,7 @@ Here is a basic local zk config: https://gist.github.com/DanielWaterworth/6ab8d0
 ## Stronghold initial setup
 
 ```
-$ zkCLI
-[zk: localhost:2181(CONNECTED) 1] create /ref ""
-[zk: localhost:2181(CONNECTED) 2] create /head ""
-[zk: localhost:2181(CONNECTED) 3] quit
-$ ./dist/build/wipe/wipe
+$ ./dist/build/wipe/wipe <zk address>
 ```
 
 # Invocation
