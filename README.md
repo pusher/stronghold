@@ -6,13 +6,18 @@ Using homebrew (--c installs C headers):
 
     brew install zookeeper --c
 
-## Installing dependencies
+## Building Stronghold
 
-Install dependencies including zookeeper bindings from:
-https://github.com/motus/haskell-zookeeper-client . Remember to pass `--extra-include-dirs=/usr/local/Cellar/zookeeper/ZOOKEEPER_VERSION/include/zookeeper/` to `cabal install` when building haskell-zookeeper-client.
+    # In this directory
+    cabal sandbox init
 
-Then:
+    # Somewhere else
+    git clone git@github.com:motus/haskell-zookeeper-client.git
 
+    # Back in this directory
+    cabal sandbox add-source path/to/haskell-zookeeper-client
+    cabal install zookeeper --extra-include-dirs=/usr/local/Cellar/zookeeper/ZOOKEEPER_VERSION/include/zookeeper/ # or wherever your zookeeper headers are
+    cabal install --only-dependencies # This will take some time
     cabal configure
     cabal build
 
@@ -24,12 +29,14 @@ Here is a basic local zk config: https://gist.github.com/DanielWaterworth/6ab8d0
 
 ## Stronghold initial setup
 
-```
-$ ./dist/build/wipe/wipe <zk address>
-```
+To initialize the state in zookeeper.
+
+    $ ./dist/build/wipe/wipe <zk address>
 
 # Invocation
 
-```
-stronghold <port> <zk address>
-```
+    stronghold <port> <zk address>
+
+Running locally, you'll probably want:
+
+    ./dist/build/stronghold/stronghold 5040 localhost:2181
