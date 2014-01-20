@@ -289,8 +289,10 @@ applyAll = appEndo . mconcat . map Endo
 
 main :: IO ()
 main = do
-  [portString, zkHostPort] <- getArgs
-  start (read portString) zkHostPort
+  args <- getArgs
+  case args of
+    [portString, zkHostPort] -> start (read portString) zkHostPort
+    _ -> putStrLn "Expected stronghold [port] [zookeeper host string]"
 
 start :: Int -> String -> IO ()
 start port zkHostPort = do
