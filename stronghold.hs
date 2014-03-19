@@ -115,7 +115,7 @@ site zk =
   recordToJSON :: Ref HistoryTag -> MetaInfo -> [Path] -> JSON
   recordToJSON ref (MetaInfo ts comment author) paths =
     Aeson.object [
-      ("revision", Aeson.toJSON (unref ref)),
+      ("revision", Aeson.toJSON $ decodeUtf8 (unref ref)),
       ("timestamp", Aeson.toJSON $ integerFromUTC ts),
       ("comment", Aeson.toJSON comment),
       ("author", Aeson.toJSON author),
@@ -215,7 +215,7 @@ site zk =
     deepMerge
       (Aeson.toJSON meta)
       (Aeson.object [
-        ("previous", Aeson.toJSON (unref previous)),
+        ("previous", Aeson.toJSON $ decodeUtf8 (unref previous) ),
         ("changes", formatChanges changes)
       ])
   formatInfo Nothing = Aeson.object [("previous", Aeson.Null)]
