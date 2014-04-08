@@ -4,7 +4,21 @@
 
 Using homebrew (--c installs C headers):
 
+    # Install Java using Brew cask (or got to http://java.com/en/download/ )
+    brew tap phinze/cask
+    brew install brew-cask
+    brew cask install java
+
+    # Install zookeeper (with the C include headers)
     brew install zookeeper --c
+
+    # Install Haskell
+    brew install haskell-platform # Time for a coffee..
+    # haskell-platform 2013.2.0.0 has an old cabal which doesn't have the `cabal sandbox` command
+    cabal update
+    cabal install cabal-install
+    # .. and add this to your .profile or use direnv
+    export PATH=~/.cabal/bin:$PATH
 
 ## Building Stronghold
 
@@ -16,7 +30,7 @@ Using homebrew (--c installs C headers):
 
     # Back in this directory
     cabal sandbox add-source path/to/haskell-zookeeper-client
-    cabal install zookeeper --extra-include-dirs=/usr/local/Cellar/zookeeper/ZOOKEEPER_VERSION/include/zookeeper/ # or wherever your zookeeper headers are
+    cabal install zookeeper --extra-include-dirs=`brew --prefix zookeeper`/include/zookeeper/ # or wherever your zookeeper headers are
     cabal install --only-dependencies # This will take some time
     cabal configure
     cabal build
@@ -40,3 +54,7 @@ To initialize the state in zookeeper.
 Running locally, you'll probably want:
 
     ./dist/build/stronghold/stronghold 5040 localhost:2181
+
+    or
+
+    foreman start
