@@ -21,7 +21,6 @@ import Control.Applicative ((<$>))
 import Control.Monad (foldM)
 
 import StoredData
-import qualified ZkInterface as Zk
 
 import Util (deepMerge, Path(Path), pathToList, listToPath)
 

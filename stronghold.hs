@@ -66,7 +66,7 @@ sendError status body = do
 
 runStoreOpSnap :: Zk.ZkInterface -> StoreOp a -> Snap a
 runStoreOpSnap zk op = do
-  result <- liftIO $ runStoreOp' zk op
+  result <- liftIO $ Zk.runStoreOp zk op
   case result of
     Nothing ->
       sendError InternalServerError "There was some Zookeeper related error"
