@@ -53,8 +53,12 @@ To initialize the state in zookeeper.
 
 Running locally, you'll probably want:
 
-    ./dist/build/stronghold/stronghold 5040 localhost:2181
+    cabal run stronghold -- 5040 localhost:2181
 
     or
 
     foreman start
+
+There's also a development mode that uses SQLite for storage instead of zookeeper:
+
+    cabal run stronghold -- development 5040 ./data.db
