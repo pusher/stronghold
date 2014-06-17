@@ -5,14 +5,16 @@ cabal-version:       >=1.8
 
 executable stronghold
   ghc-options:         -threaded -rtsopts
+  hs-source-dirs:      src
   main-is:             stronghold.hs
   build-depends:       base >=4.6.0, operational, bytestring, text, aeson,
                        snap-server, snap-core, cereal, zookeeper, cryptohash,
                        base16-bytestring, transformers, unordered-containers,
-                       hashable, time, stm, mtl, async
+                       hashable, time, stm, mtl, async, sqlite-simple
 
 executable wipe
   ghc-options:         -threaded
+  hs-source-dirs:      src
   main-is:             wipe.hs
   build-depends:       base >=4.6.0, zookeeper, cryptohash, base16-bytestring,
                        text, bytestring

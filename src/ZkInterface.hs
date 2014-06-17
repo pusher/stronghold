@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 module ZkInterface (
   ZkInterface,
   newZkInterface,
@@ -6,7 +7,8 @@ module ZkInterface (
   loadData,
   storeData,
   hasReference,
-  updateHead
+  updateHead,
+  runStoreOp
 ) where
 
 {-
@@ -19,6 +21,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Base16 as Base16
+import Data.Serialize (decode, encode)
 
 import Control.Applicative ((<$>), (<*>), empty)
 import Control.Monad (guard, join)
@@ -27,12 +30,14 @@ import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
 import Control.Exception (tryJust, Exception, try, SomeException)
 import Control.Concurrent.STM (STM, atomically, retry, TVar, readTVar, writeTVar, newTVarIO, readTVarIO)
 import Control.Concurrent.MVar (MVar, newMVar, withMVar, putMVar, takeMVar, readMVar)
+import Control.Monad.Operational (ProgramViewT (..), view)
 
 import Crypto.Hash.SHA1 (hash)
 
 import qualified Zookeeper as Zoo
 
 import LRUCache (newLRU)
+import StoredData (StoreOp, StoreInstr (..), makeRef, unref)
 
 data ZkInterface =
   ZkInterface
@@ -58,7 +63,6 @@ getHeadBlockIfEq zk ref = lift $ atomically $ do
     retry
    else
     return head
-
 
 watcher :: ZkInterface -> Zoo.ZHandle -> Zoo.EventType -> Zoo.State -> String -> IO ()
 watcher zk@(ZkInterface _ _ _ _ handleException) zh zEventType zState path = do
@@ -163,3 +167,33 @@ updateHead (ZkInterface _ _ _ zk _) old new = do
     return True
    else
     return False
+
+runStoreOp' :: ZkInterface -> StoreOp a -> MaybeT IO a
+runStoreOp' zk op =
+  case view op of
+    Return x -> return x
+    (Store d) :>>= rest -> do
+      let d' = encode d
+      ref <- storeData zk d'
+      runStoreOp' zk (rest (makeRef ref))
+    (Load r) :>>= rest -> do
+      dat <- loadData zk (unref r)
+      either fail (runStoreOp' zk . rest) (decode dat)
+    GetHead :>>= rest -> do
+      head <- getHead zk
+      runStoreOp' zk (rest (makeRef head))
+    (GetHeadBlockIfEq ref) :>>= rest -> do
+      head <- getHeadBlockIfEq zk (unref ref)
+      runStoreOp' zk (rest (makeRef head))
+    (UpdateHead old new) :>>= rest -> do
+      b <- updateHead zk (unref old) (unref new)
+      runStoreOp' zk (rest b)
+    (CreateRef r) :>>= rest -> do
+      b <- hasReference zk r
+      if b then
+        runStoreOp' zk (rest (Just (makeRef r)))
+       else
+        runStoreOp' zk (rest (Nothing))
+
+runStoreOp :: ZkInterface -> StoreOp a -> IO (Maybe a)
+runStoreOp zk op = runMaybeT (runStoreOp' zk op)

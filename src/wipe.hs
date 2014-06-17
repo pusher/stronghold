@@ -7,7 +7,7 @@ import qualified Data.ByteString.Base16 as Base16
 
 import Control.Exception
 
-import Crypto.Hash.SHA1
+import Crypto.Hash.SHA1 (hash)
 
 import qualified Zookeeper as Zoo
 

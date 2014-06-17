@@ -1,4 +1,4 @@
-{-# LANGUAGE DataKinds, OverloadedStrings #-}
+{-# LANGUAGE DataKinds, OverloadedStrings, Rank2Types #-}
 module Main where
 
 {-
@@ -35,6 +35,7 @@ import System.Environment (getArgs)
 import System.IO (Handle, stdout, stderr)
 
 import qualified ZkInterface as Zk
+import qualified SQLiteInterface as SQL
 import StoredData
 import Trees
 import Util (deepMerge, integerFromUTC, utcFromInteger, Path, pathToText, listToPath)
@@ -64,16 +65,8 @@ sendError status body = do
   writeText "\n"
   getResponse >>= finishWith
 
-runStoreOpSnap :: Zk.ZkInterface -> StoreOp a -> Snap a
-runStoreOpSnap zk op = do
-  result <- liftIO $ runStoreOp' zk op
-  case result of
-    Nothing ->
-      sendError InternalServerError "There was some Zookeeper related error"
-    Just x -> return x
-
-site :: Zk.ZkInterface -> Snap ()
-site zk =
+site :: (forall a. StoreOp a -> Snap a) -> Snap ()
+site runStoreOp =
   ifTop (writeBS "Stronghold says hi") <|>
   route [
     ("head", fetchHead),
@@ -83,7 +76,7 @@ site zk =
  where
   createRef' :: ByteString -> Snap (Ref HistoryTag)
   createRef' b = do
-    b' <- runStoreOpSnap zk $ createRef b
+    b' <- runStoreOp $ createRef b
     case b' of
       Nothing -> sendError UnprocessableEntity "Invalid reference"
       Just b'' -> return b''
@@ -104,12 +97,12 @@ site zk =
 
   fetchHead :: Snap ()
   fetchHead = ifTop $ method GET $ do
-    head <- runStoreOpSnap zk getHead
+    head <- runStoreOp getHead
     writeBS (unref head)
 
   fetchAt :: UTCTime -> Snap ()
   fetchAt ts = do
-    ref <- runStoreOpSnap zk $ findActive ts
+    ref <- runStoreOp $ findActive ts
     writeBS (unref ref)
 
   recordToJSON :: Ref HistoryTag -> MetaInfo -> [Path] -> JSON
@@ -127,7 +120,7 @@ site zk =
 
   summarizeRevisions :: [Ref HistoryTag] -> Snap JSON
   summarizeRevisions revisions = do
-    infos <- runStoreOpSnap zk $ mapM loadInfo revisions
+    infos <- runStoreOp $ mapM loadInfo revisions
     let err = sendError UnprocessableEntity "can't process the sentinel history node"
     infos' <- maybe err return (sequence infos)
     let result = zip revisions infos'
@@ -156,14 +149,14 @@ site zk =
       (Just ts, Nothing, Nothing, Nothing, Nothing) -> do
         fetchAt ts
       (Nothing, Just last'', _, Nothing, Nothing) -> do
-        revisions <- runStoreOpSnap zk $ revisionsBefore size' last''
+        revisions <- runStoreOp $ revisionsBefore size' last''
         result <- summarizeRevisions revisions
         writeLBS $ Aeson.encode result
       (Nothing, Nothing, Just size'', Just first'', Just limit'') ->
         if first'' == limit'' then
           writeLBS $ Aeson.encode ([] :: [JSON])
          else do
-          revisions <- runStoreOpSnap zk $ revisionsBetween first'' limit''
+          revisions <- runStoreOp $ revisionsBetween first'' limit''
           let err = sendError UnprocessableEntity "first is not in limit's history"
           revisions' <- maybe err return revisions
           let revisions'' = take size'' revisions'
@@ -173,7 +166,7 @@ site zk =
 
   paths :: History -> Snap ()
   paths hist = ifTop $ method GET $ do
-    paths <- runStoreOpSnap zk $ do
+    paths <- runStoreOp $ do
       hist' <- derefHistory hist
       case hist' of
         Nil -> return []
@@ -196,7 +189,7 @@ site zk =
   next hist = method GET $ do
     extendTimeout 300
     path <- getPath
-    result <- runStoreOpSnap zk $ nextMaterializedView hist path
+    result <- runStoreOp $ nextMaterializedView hist path
     (json, revision) <- maybe (liftIO $ fail "") return result
     let object = [("data", json), ("revision", Aeson.String (decodeUtf8 (unref revision)))]
     writeLBS $ Aeson.encode $ Aeson.object object
@@ -222,13 +215,13 @@ site zk =
 
   info :: Ref HistoryTag -> Snap ()
   info ref = ifTop $ method GET $ do
-    result <- runStoreOpSnap zk $ loadInfo ref
+    result <- runStoreOp $ loadInfo ref
     writeLBS $ Aeson.encode $ formatInfo result
 
   materialized :: History -> Snap ()
   materialized hist = method GET $ do
     path <- getPath
-    json <- runStoreOpSnap zk $ do
+    json <- runStoreOp $ do
       hier <- lastHierarchy hist
       snd <$> materializedView path hier
     writeLBS $ Aeson.encode $ json
@@ -236,7 +229,7 @@ site zk =
   peculiar :: History -> Snap ()
   peculiar hist = method GET $ do
     path <- getPath
-    json <- runStoreOpSnap zk $ do
+    json <- runStoreOp $ do
       hier <- lastHierarchy hist
       z <- makeHierarchyZipper hier
       z' <- followPath path z
@@ -275,7 +268,7 @@ site zk =
           Just (author, comment, dat) -> do
             ts <- liftIO $ getCurrentTime
             let meta = MetaInfo ts comment author
-            result <- (runStoreOpSnap zk $ updateHierarchy meta path dat ref)
+            result <- (runStoreOp $ updateHierarchy meta path dat ref)
             case result of
               Just head -> writeBS (unref head)
               Nothing ->
@@ -287,21 +280,41 @@ writeTo handle = ConfigIoLog (BC.hPutStrLn handle)
 applyAll :: [a -> a] -> a -> a
 applyAll = appEndo . mconcat . map Endo
 
+runStoreOpSnapZk :: Zk.ZkInterface -> StoreOp a -> Snap a
+runStoreOpSnapZk zk op = do
+  result <- liftIO $ Zk.runStoreOp zk op
+  case result of
+    Nothing ->
+      sendError InternalServerError "There was some Zookeeper related error"
+    Just x -> return x
+
+runStoreOpSnapSQL :: SQL.SQLiteInterface -> StoreOp a -> Snap a
+runStoreOpSnapSQL sql op = do
+  result <- liftIO $ SQL.runStoreOp sql op
+  case result of
+    Nothing ->
+      sendError InternalServerError "There was some SQLite related problem"
+    Just x -> return x
+
 main :: IO ()
 main = do
   args <- getArgs
   case args of
-    [portString, zkHostPort] -> start (read portString) zkHostPort
+    [portString, zkHostPort] -> do
+      thread <- myThreadId
+      zk <- Zk.newZkInterface zkHostPort (throwTo thread)
+      start (runStoreOpSnapZk zk) (read portString)
+    ["development", portString, path] -> do
+      sql <- SQL.newSQLiteInterface path
+      start (runStoreOpSnapSQL sql) (read portString)
     _ -> putStrLn "Expected stronghold [port] [zookeeper host string]"
 
-start :: Int -> String -> IO ()
-start port zkHostPort = do
-  thread <- myThreadId
-  zk <- Zk.newZkInterface zkHostPort (throwTo thread)
+start :: (forall a. StoreOp a -> Snap a) -> Int -> IO ()
+start runStoreOp port = do
   let config =
         applyAll [
           setPort port,
           setAccessLog (writeTo stdout),
           setErrorLog (writeTo stderr)
         ] defaultConfig
-  simpleHttpServe (config :: Config Snap ()) (site zk)
+  simpleHttpServe (config :: Config Snap ()) (site runStoreOp)

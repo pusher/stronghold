@@ -26,7 +26,6 @@ import Control.Monad.Operational (ProgramViewT (..), singleton, view, Program)
 
 import Crypto.Hash.SHA1 (hash)
 
-import qualified ZkInterface as Zk
 import Util (integerFromUTC)
 
 type JSON = Aeson.Value
@@ -212,33 +211,3 @@ isRight _ = False
 
 validHistoryNode :: ByteString -> Bool
 validHistoryNode s = isRight (decode s :: Either String (Data HistoryTag))
-
-runStoreOp :: Zk.ZkInterface -> StoreOp a -> MaybeT IO a
-runStoreOp zk op =
-  case view op of
-    Return x -> return x
-    (Store d) :>>= rest -> do
-      let d' = encode d
-      ref <- Zk.storeData zk d'
-      runStoreOp zk (rest (makeRef ref))
-    (Load r) :>>= rest -> do
-      dat <- Zk.loadData zk (unref r)
-      either fail (runStoreOp zk . rest) (decode dat)
-    GetHead :>>= rest -> do
-      head <- Zk.getHead zk
-      runStoreOp zk (rest (makeRef head))
-    (GetHeadBlockIfEq ref) :>>= rest -> do
-      head <- Zk.getHeadBlockIfEq zk (unref ref)
-      runStoreOp zk (rest (makeRef head))
-    (UpdateHead old new) :>>= rest -> do
-      b <- Zk.updateHead zk (unref old) (unref new)
-      runStoreOp zk (rest b)
-    (CreateRef r) :>>= rest -> do
-      b <- Zk.hasReference zk r
-      if b then
-        runStoreOp zk (rest (Just (makeRef r)))
-       else
-        runStoreOp zk (rest (Nothing))
-
-runStoreOp' :: Zk.ZkInterface -> StoreOp a -> IO (Maybe a)
-runStoreOp' zk op = runMaybeT (runStoreOp zk op)
