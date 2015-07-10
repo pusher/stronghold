@@ -2,28 +2,22 @@
 
 ## Installing dependencies (on OSX)
 
-NB: There is a development mode which is backed by sqlite. Depending on what you're planning, this might well be suitable and much simpler.
+NB: There is a development mode which is backed by sqlite. Depending on what
+you're planning, this might well be suitable and much simpler.
 
 Using homebrew:
 
-    # Install zookeeper
-    brew install zookeeper
-
-    # Install Haskell
-    brew install ghc cabal-install
+```sh
+# Install zookeeper
+brew install zookeeper
+```
 
 ## Building Stronghold
 
-    # In this directory
-    cabal sandbox init
-
-    git submodule update --init
-
-    cabal sandbox add-source vendor/zookeeper
-    cabal install zookeeper --extra-include-dirs=`brew --prefix zookeeper`/include/zookeeper/ # or wherever your zookeeper headers are
-    cabal install --only-dependencies # This will take some time
-    cabal configure
-    cabal build
+```sh
+export CPATH=$(brew --prefix zookeeper)/include/zookeeper:$CPATH
+stack build
+```
 
 # Initial setup
 
@@ -35,20 +29,30 @@ Here is a basic local zk config: https://gist.github.com/DanielWaterworth/6ab8d0
 
 To initialize the state in zookeeper.
 
-    $ ./dist/build/wipe/wipe localhost:2181
+```sh
+stack exec wipe -- localhost:2181
+```
 
 # Invocation
 
-    stronghold <port> <zk address>
+```sh
+stronghold <port> <zk address>
+```
 
 Running locally, you'll probably want:
 
-    cabal run stronghold -- 5040 localhost:2181
+```sh
+stack exec stronghold -- 5040 localhost:2181
+```
 
-    or
+or
 
-    foreman start
+```sh
+foreman start
+```
 
 There's also a development mode that uses SQLite for storage instead of zookeeper:
 
-    cabal run stronghold -- development 5040 ./data.db
+```sh
+stack exec stronghold -- development 5040 ./data.db
+```
