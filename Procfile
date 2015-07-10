@@ -1,2 +1,2 @@
 zookeeper: zkServer start-foreground
-stronghold: cabal run stronghold 5040 localhost:2181
+stronghold: stack exec stronghold -- 5040 localhost:2181

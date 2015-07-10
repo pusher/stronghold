@@ -1,3 +1,0 @@
-[submodule "vendor/zookeeper"]
-	path = vendor/zookeeper
-	url = https://github.com/motus/haskell-zookeeper-client.git
