@@ -5,40 +5,35 @@ module Main where
   This file should only define Stronghold's API.
 -}
 
-import Prelude hiding (mapM)
-
-import Data.Monoid (mempty, mconcat, Endo(Endo), appEndo)
-import Data.Maybe (fromJust, listToMaybe)
-import Data.ByteString (ByteString)
-import qualified Data.ByteString.Char8 as BC
-import qualified Data.ByteString.Base16 as Base16
-import Data.Text (Text, unpack)
-import qualified Data.Text as Text
-import Data.Text.Encoding (decodeUtf8)
-import qualified Data.Aeson as Aeson
-import qualified Data.HashMap.Strict as HashMap
-import Data.Time.Clock (getCurrentTime, UTCTime)
-import Data.Traversable (mapM)
-
 import Control.Applicative ((<$>), (<*>), (<|>), empty)
+import Control.Concurrent (throwTo, myThreadId)
+import Control.Exception (tryJust, try, SomeException)
 import Control.Monad (foldM, join)
 import Control.Monad.IO.Class (liftIO)
-import Control.Exception (tryJust, try, SomeException)
-import Control.Concurrent (throwTo, myThreadId)
-
+import Crypto.Hash.SHA1 (hash)
+import Data.ByteString (ByteString)
+import Data.Maybe (fromJust, listToMaybe)
+import Data.Monoid (mempty, mconcat, Endo(Endo), appEndo)
+import Data.Text (Text, unpack)
+import Data.Text.Encoding (decodeUtf8)
+import Data.Time.Clock (getCurrentTime, UTCTime)
+import Data.Traversable (mapM)
+import Prelude hiding (mapM)
 import Snap.Core
 import Snap.Http.Server
-
-import Crypto.Hash.SHA1 (hash)
-
+import StoredData
 import System.Environment (getArgs)
 import System.IO (Handle, stdout, stderr)
-
-import qualified ZkInterface as Zk
-import qualified SQLiteInterface as SQL
-import StoredData
 import Trees
 import Util (deepMerge, integerFromUTC, utcFromInteger, Path, pathToText, listToPath)
+
+import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Base16 as Base16
+import qualified Data.ByteString.Char8 as BC
+import qualified Data.HashMap.Strict as HashMap
+import qualified Data.Text as Text
+import qualified SQLiteInterface as SQL
+import qualified ZkInterface as Zk
 
 data HTTPStatus =
   BadRequest |

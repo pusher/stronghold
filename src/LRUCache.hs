@@ -17,17 +17,16 @@ module LRUCache (
   all threads waiting for that value, but it will not be cached.
 -}
 
+import Control.Applicative ((<$>), (<*>), (<|>))
+import Control.Concurrent.Async (Async, wait, async)
+import Control.Concurrent.STM (STM, TVar, newTVar, readTVar, writeTVar, atomically, retry)
+import Control.Exception (try, SomeException, throw)
+import Control.Monad (mapM, forM_, when)
+import Data.HashMap.Strict (HashMap)
+import Data.Hashable (Hashable)
 import Prelude hiding (readList, last)
 
-import Data.Hashable (Hashable)
-import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
-
-import Control.Applicative ((<$>), (<*>), (<|>))
-import Control.Monad (mapM, forM_, when)
-import Control.Exception (try, SomeException, throw)
-import Control.Concurrent.STM (STM, TVar, newTVar, readTVar, writeTVar, atomically, retry)
-import Control.Concurrent.Async (Async, wait, async)
 
 newtype MList a =
   MList (TVar (Maybe (MNode a, MNode a), Int))

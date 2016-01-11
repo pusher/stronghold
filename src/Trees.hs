@@ -6,23 +6,21 @@ module Trees where
   data in zookeeper.
 -}
 
-import Data.Monoid (mempty, mappend)
-import Data.Maybe (fromJust, isJust)
-import Data.Text (Text)
-import qualified Data.Text as Text
-import qualified Data.Aeson as Aeson
-import Data.HashMap.Strict (HashMap, unionWith)
-import qualified Data.HashMap.Strict as HashMap
-import qualified Data.HashSet as HashSet
-import Data.Hashable (Hashable)
-import Data.Time.Clock (UTCTime)
-
 import Control.Applicative ((<$>))
 import Control.Monad (foldM)
-
+import Data.HashMap.Strict (HashMap, unionWith)
+import Data.Hashable (Hashable)
+import Data.Maybe (fromJust, isJust)
+import Data.Monoid (mempty, mappend)
+import Data.Text (Text)
+import Data.Time.Clock (UTCTime)
 import StoredData
-
 import Util (deepMerge, Path(Path), pathToList, listToPath)
+
+import qualified Data.Aeson as Aeson
+import qualified Data.HashMap.Strict as HashMap
+import qualified Data.HashSet as HashSet
+import qualified Data.Text as Text
 
 -- This is a little tricky, if you're having difficulty understanding, read up 
 -- on fixed point combinators and fixed point types.

@@ -1,23 +1,20 @@
 {-# LANGUAGE OverloadedStrings, GADTs #-}
 module SQLiteInterface where
 
-import Data.Maybe (listToMaybe, isJust)
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Base16 as Base16
-import Data.Serialize (decode, encode)
-
-import qualified Database.SQLite.Simple as SQL
-
+import Control.Concurrent.STM
 import Control.Monad (when)
+import Control.Monad.Operational (ProgramViewT (..), view)
 import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Maybe (MaybeT (..))
-import Control.Concurrent.STM
-import Control.Monad.Operational (ProgramViewT (..), view)
-
 import Crypto.Hash.SHA1 (hash)
-
+import Data.ByteString (ByteString)
+import Data.Maybe (listToMaybe, isJust)
+import Data.Serialize (decode, encode)
 import StoredData (StoreOp, StoreInstr (..), makeRef, unref, Data (..), ListNode (..))
+
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Base16 as Base16
+import qualified Database.SQLite.Simple as SQL
 
 data SQLiteInterface = SQLiteInterface (TVar ByteString) SQL.Connection
 

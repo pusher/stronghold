@@ -16,28 +16,25 @@ module ZkInterface (
   operations that are pertinent to us.
 -}
 
-import Data.Maybe (isJust, maybe)
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as BC
-import qualified Data.ByteString.Base16 as Base16
-import Data.Serialize (decode, encode)
-
 import Control.Applicative ((<$>), (<*>), empty)
+import Control.Concurrent.MVar (MVar, newMVar, withMVar, putMVar, takeMVar, readMVar)
+import Control.Concurrent.STM (STM, atomically, retry, TVar, readTVar, writeTVar, newTVarIO, readTVarIO)
+import Control.Exception (tryJust, Exception, try, SomeException)
 import Control.Monad (guard, join)
+import Control.Monad.Operational (ProgramViewT (..), view)
 import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
-import Control.Exception (tryJust, Exception, try, SomeException)
-import Control.Concurrent.STM (STM, atomically, retry, TVar, readTVar, writeTVar, newTVarIO, readTVarIO)
-import Control.Concurrent.MVar (MVar, newMVar, withMVar, putMVar, takeMVar, readMVar)
-import Control.Monad.Operational (ProgramViewT (..), view)
-
 import Crypto.Hash.SHA1 (hash)
-
-import qualified Zookeeper as Zoo
-
+import Data.ByteString (ByteString)
+import Data.Maybe (isJust, maybe)
+import Data.Serialize (decode, encode)
 import LRUCache (newLRU)
 import StoredData (StoreOp, StoreInstr (..), makeRef, unref)
+
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Base16 as Base16
+import qualified Data.ByteString.Char8 as BC
+import qualified Zookeeper as Zoo
 
 data ZkInterface =
   ZkInterface

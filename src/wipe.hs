@@ -1,17 +1,14 @@
 {-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
 module Main where
 
+import Control.Exception
+import Crypto.Hash.SHA1 (hash)
 import Data.ByteString.Char8
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
-import qualified Data.ByteString.Base16 as Base16
-
-import Control.Exception
-
-import Crypto.Hash.SHA1 (hash)
-
-import qualified Zookeeper as Zoo
-
 import System.Environment (getArgs)
+
+import qualified Data.ByteString.Base16 as Base16
+import qualified Zookeeper as Zoo
 
 nilNode = "3n"
 

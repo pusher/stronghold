@@ -9,13 +9,14 @@ module Util (
   Path (Path)
 ) where
 
+import Data.HashMap.Strict (unionWith)
 import Data.Monoid
 import Data.Text (Text)
-import qualified Data.Text as Text
-import qualified Data.Aeson as Aeson
-import Data.HashMap.Strict (unionWith)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
+
+import qualified Data.Aeson as Aeson
+import qualified Data.Text as Text
 
 newtype Path = Path [Text]
 
