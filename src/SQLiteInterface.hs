@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings, GADTs #-}
 module SQLiteInterface where
 
-import Control.Concurrent.STM
+import Control.Concurrent.STM (TVar, newTVarIO, STM, readTVar, atomically, retry, writeTVar)
 import Control.Monad (when)
 import Control.Monad.Operational (ProgramViewT (..), view)
 import Control.Monad.Trans (lift)

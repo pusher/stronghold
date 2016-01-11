@@ -19,12 +19,11 @@ import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock (getCurrentTime, UTCTime)
 import Data.Traversable (mapM)
 import Prelude hiding (mapM)
-import Snap.Core
-import Snap.Http.Server
-import StoredData
+import Snap.Core (Snap, Method(GET, POST))
+import StoredData (JSON)
 import System.Environment (getArgs)
 import System.IO (Handle, stdout, stderr)
-import Trees
+import Trees ()
 import Util (deepMerge, integerFromUTC, utcFromInteger, Path, pathToText, listToPath)
 
 import qualified Data.Aeson as Aeson
@@ -32,7 +31,11 @@ import qualified Data.ByteString.Base16 as Base16
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Text as Text
+import qualified Snap.Core as Snap
+import qualified Snap.Http.Server as Server
+import qualified StoredData as SD
 import qualified SQLiteInterface as SQL
+import qualified Trees as T
 import qualified ZkInterface as Zk
 
 data HTTPStatus =
@@ -55,33 +58,33 @@ errorMessage UnprocessableEntity = "Unprocessable Entity"
 
 sendError :: HTTPStatus -> Text -> Snap a
 sendError status body = do
-  modifyResponse $ setResponseStatus (errorCode status) (errorMessage status)
-  writeText body
-  writeText "\n"
-  getResponse >>= finishWith
+  Snap.modifyResponse $ Snap.setResponseStatus (errorCode status) (errorMessage status)
+  Snap.writeText body
+  Snap.writeText "\n"
+  Snap.getResponse >>= Snap.finishWith
 
-site :: (forall a. StoreOp a -> Snap a) -> Snap ()
+site :: (forall a. SD.StoreOp a -> Snap a) -> Snap ()
 site runStoreOp =
-  ifTop (writeBS "Stronghold says hi") <|>
-  route [
+  Snap.ifTop (Snap.writeBS "Stronghold says hi") <|>
+  Snap.route [
     ("head", fetchHead),
     ("versions", versions),
     (":version/", withVersion)
    ]
  where
-  createRef' :: ByteString -> Snap (Ref HistoryTag)
+  createRef' :: ByteString -> Snap (SD.Ref SD.HistoryTag)
   createRef' b = do
-    b' <- runStoreOp $ createRef b
+    b' <- runStoreOp $ SD.createRef b
     case b' of
       Nothing -> sendError UnprocessableEntity "Invalid reference"
       Just b'' -> return b''
 
   withVersion :: Snap ()
   withVersion = do
-    Just version <- getParam "version"
+    Just version <- Snap.getParam "version"
     ref <- createRef' version
-    let hist = makeHistoryTree ref
-    route [
+    let hist = T.makeHistoryTree ref
+    Snap.route [
       ("tree/paths", paths hist),
       ("tree/materialized", materialized hist),
       ("tree/peculiar", peculiar hist),
@@ -91,19 +94,19 @@ site runStoreOp =
      ]
 
   fetchHead :: Snap ()
-  fetchHead = ifTop $ method GET $ do
-    head <- runStoreOp getHead
-    writeBS (unref head)
+  fetchHead = Snap.ifTop $ Snap.method GET $ do
+    head <- runStoreOp SD.getHead
+    Snap.writeBS (SD.unref head)
 
   fetchAt :: UTCTime -> Snap ()
   fetchAt ts = do
-    ref <- runStoreOp $ findActive ts
-    writeBS (unref ref)
+    ref <- runStoreOp $ T.findActive ts
+    Snap.writeBS (SD.unref ref)
 
-  recordToJSON :: Ref HistoryTag -> MetaInfo -> [Path] -> JSON
-  recordToJSON ref (MetaInfo ts comment author) paths =
+  recordToJSON :: SD.Ref SD.HistoryTag -> SD.MetaInfo -> [Path] -> SD.JSON
+  recordToJSON ref (SD.MetaInfo ts comment author) paths =
     Aeson.object [
-      ("revision", Aeson.toJSON $ decodeUtf8 (unref ref)),
+      ("revision", Aeson.toJSON $ decodeUtf8 (SD.unref ref)),
       ("timestamp", Aeson.toJSON $ integerFromUTC ts),
       ("comment", Aeson.toJSON comment),
       ("author", Aeson.toJSON author),
@@ -113,9 +116,9 @@ site runStoreOp =
   maybeReadBS :: Read a => ByteString -> Maybe a
   maybeReadBS = fmap fst . listToMaybe . reads . unpack . decodeUtf8
 
-  summarizeRevisions :: [Ref HistoryTag] -> Snap JSON
+  summarizeRevisions :: [SD.Ref SD.HistoryTag] -> Snap JSON
   summarizeRevisions revisions = do
-    infos <- runStoreOp $ mapM loadInfo revisions
+    infos <- runStoreOp $ mapM T.loadInfo revisions
     let err = sendError UnprocessableEntity "can't process the sentinel history node"
     infos' <- maybe err return (sequence infos)
     let result = zip revisions infos'
@@ -125,14 +128,14 @@ site runStoreOp =
 
   -- query the set of versions
   versions :: Snap ()
-  versions = ifTop $ method GET $ do
-    at <- getParam "at"
+  versions = Snap.ifTop $ Snap.method GET $ do
+    at <- Snap.getParam "at"
 
-    last <- getParam "last"
-    size <- getParam "size"
+    last <- Snap.getParam "last"
+    size <- Snap.getParam "size"
 
-    first <- getParam "first"
-    limit <- getParam "limit"
+    first <- Snap.getParam "first"
+    limit <- Snap.getParam "limit"
 
     first' <- mapM createRef' first
     last' <- mapM createRef' last
@@ -144,35 +147,35 @@ site runStoreOp =
       (Just ts, Nothing, Nothing, Nothing, Nothing) -> do
         fetchAt ts
       (Nothing, Just last'', _, Nothing, Nothing) -> do
-        revisions <- runStoreOp $ revisionsBefore size' last''
+        revisions <- runStoreOp $ T.revisionsBefore size' last''
         result <- summarizeRevisions revisions
-        writeLBS $ Aeson.encode result
+        Snap.writeLBS $ Aeson.encode result
       (Nothing, Nothing, Just size'', Just first'', Just limit'') ->
         if first'' == limit'' then
-          writeLBS $ Aeson.encode ([] :: [JSON])
+          Snap.writeLBS $ Aeson.encode ([] :: [JSON])
          else do
-          revisions <- runStoreOp $ revisionsBetween first'' limit''
+          revisions <- runStoreOp $ T.revisionsBetween first'' limit''
           let err = sendError UnprocessableEntity "first is not in limit's history"
           revisions' <- maybe err return revisions
           let revisions'' = take size'' revisions'
           result <- summarizeRevisions revisions''
-          writeLBS $ Aeson.encode result
+          Snap.writeLBS $ Aeson.encode result
       (_, _, _, _, _) -> empty
 
-  paths :: History -> Snap ()
-  paths hist = ifTop $ method GET $ do
+  paths :: T.History -> Snap ()
+  paths hist = Snap.ifTop $ Snap.method GET $ do
     paths <- runStoreOp $ do
-      hist' <- derefHistory hist
+      hist' <- T.derefHistory hist
       case hist' of
-        Nil -> return []
-        Cons (_, hier) _ -> do
-          z <- makeHierarchyZipper hier
-          subPaths z
-    writeLBS (Aeson.encode (map pathToText paths))
+        SD.Nil -> return []
+        SD.Cons (_, hier) _ -> do
+          z <- T.makeHierarchyZipper hier
+          T.subPaths z
+    Snap.writeLBS (Aeson.encode (map pathToText paths))
 
   getPath :: Snap Path
   getPath = do
-    path <- (decodeUtf8 . rqPathInfo) <$> getRequest
+    path <- (decodeUtf8 . Snap.rqPathInfo) <$> Snap.getRequest
     if Text.null path then
       return mempty
      else if Text.last path == '/' then
@@ -180,14 +183,14 @@ site runStoreOp =
      else
       (return . listToPath . Text.splitOn "/") path
 
-  next :: Ref HistoryTag -> Snap ()
-  next hist = method GET $ do
-    extendTimeout 300
+  next :: SD.Ref SD.HistoryTag -> Snap ()
+  next hist = Snap.method GET $ do
+    Snap.extendTimeout 300
     path <- getPath
-    result <- runStoreOp $ nextMaterializedView hist path
+    result <- runStoreOp $ T.nextMaterializedView hist path
     (json, revision) <- maybe (liftIO $ fail "") return result
-    let object = [("data", json), ("revision", Aeson.String (decodeUtf8 (unref revision)))]
-    writeLBS $ Aeson.encode $ Aeson.object object
+    let object = [("data", json), ("revision", Aeson.String (decodeUtf8 (SD.unref revision)))]
+    Snap.writeLBS $ Aeson.encode $ Aeson.object object
 
   formatChanges :: [(Path, JSON, JSON)] -> JSON
   formatChanges =
@@ -198,39 +201,39 @@ site runStoreOp =
         ("new", new)
       ])
 
-  formatInfo :: Maybe (MetaInfo, Ref HistoryTag, [(Path, JSON, JSON)]) -> JSON
+  formatInfo :: Maybe (SD.MetaInfo, SD.Ref SD.HistoryTag, [(Path, JSON, JSON)]) -> JSON
   formatInfo (Just (meta, previous, changes)) =
     deepMerge
       (Aeson.toJSON meta)
       (Aeson.object [
-        ("previous", Aeson.toJSON $ decodeUtf8 (unref previous) ),
+        ("previous", Aeson.toJSON $ decodeUtf8 (SD.unref previous) ),
         ("changes", formatChanges changes)
       ])
   formatInfo Nothing = Aeson.object [("previous", Aeson.Null)]
 
-  info :: Ref HistoryTag -> Snap ()
-  info ref = ifTop $ method GET $ do
-    result <- runStoreOp $ loadInfo ref
-    writeLBS $ Aeson.encode $ formatInfo result
+  info :: SD.Ref SD.HistoryTag -> Snap ()
+  info ref = Snap.ifTop $ Snap.method GET $ do
+    result <- runStoreOp $ T.loadInfo ref
+    Snap.writeLBS $ Aeson.encode $ formatInfo result
 
-  materialized :: History -> Snap ()
-  materialized hist = method GET $ do
+  materialized :: T.History -> Snap ()
+  materialized hist = Snap.method GET $ do
     path <- getPath
     json <- runStoreOp $ do
-      hier <- lastHierarchy hist
-      snd <$> materializedView path hier
-    writeLBS $ Aeson.encode $ json
+      hier <- T.lastHierarchy hist
+      snd <$> T.materializedView path hier
+    Snap.writeLBS $ Aeson.encode $ json
 
-  peculiar :: History -> Snap ()
-  peculiar hist = method GET $ do
+  peculiar :: T.History -> Snap ()
+  peculiar hist = Snap.method GET $ do
     path <- getPath
     json <- runStoreOp $ do
-      hier <- lastHierarchy hist
-      z <- makeHierarchyZipper hier
-      z' <- followPath path z
-      (_, json) <- getJSON z'
+      hier <- T.lastHierarchy hist
+      z <- T.makeHierarchyZipper hier
+      z' <- T.followPath path z
+      (_, json) <- T.getJSON z'
       return json
-    writeLBS $ Aeson.encode json
+    Snap.writeLBS $ Aeson.encode json
 
   resultToMaybe :: Aeson.Result x -> Maybe x
   resultToMaybe (Aeson.Success x) = Just x
@@ -249,10 +252,10 @@ site runStoreOp =
     resultToMaybe $ Aeson.fromJSON dat :: Maybe Aeson.Object
     (,,) <$> jsonLookup "author" obj <*> jsonLookup "comment" obj <*> return dat
 
-  update :: Ref HistoryTag -> Snap ()
-  update ref = method POST $ do
+  update :: SD.Ref SD.HistoryTag -> Snap ()
+  update ref = Snap.method POST $ do
     path <- getPath
-    body <- readRequestBody 102400
+    body <- Snap.readRequestBody 102400
     case Aeson.decode body of
       Nothing ->
         sendError BadRequest "Invalid JSON"
@@ -262,20 +265,20 @@ site runStoreOp =
             sendError UnprocessableEntity "The given JSON should contain: author, comment, data"
           Just (author, comment, dat) -> do
             ts <- liftIO $ getCurrentTime
-            let meta = MetaInfo ts comment author
-            result <- (runStoreOp $ updateHierarchy meta path dat ref)
+            let meta = SD.MetaInfo ts comment author
+            result <- (runStoreOp $ T.updateHierarchy meta path dat ref)
             case result of
-              Just head -> writeBS (unref head)
+              Just head -> Snap.writeBS (SD.unref head)
               Nothing ->
                 sendError Conflict "The update was aborted because an ancestor or descendent has changed"
 
-writeTo :: Handle -> ConfigLog
-writeTo handle = ConfigIoLog (BC.hPutStrLn handle)
+writeTo :: Handle -> Server.ConfigLog
+writeTo handle = Server.ConfigIoLog (BC.hPutStrLn handle)
 
 applyAll :: [a -> a] -> a -> a
 applyAll = appEndo . mconcat . map Endo
 
-runStoreOpSnapZk :: Zk.ZkInterface -> StoreOp a -> Snap a
+runStoreOpSnapZk :: Zk.ZkInterface -> SD.StoreOp a -> Snap a
 runStoreOpSnapZk zk op = do
   result <- liftIO $ Zk.runStoreOp zk op
   case result of
@@ -283,7 +286,7 @@ runStoreOpSnapZk zk op = do
       sendError InternalServerError "There was some Zookeeper related error"
     Just x -> return x
 
-runStoreOpSnapSQL :: SQL.SQLiteInterface -> StoreOp a -> Snap a
+runStoreOpSnapSQL :: SQL.SQLiteInterface -> SD.StoreOp a -> Snap a
 runStoreOpSnapSQL sql op = do
   result <- liftIO $ SQL.runStoreOp sql op
   case result of
@@ -304,12 +307,12 @@ main = do
       start (runStoreOpSnapSQL sql) (read portString)
     _ -> putStrLn "Expected stronghold [port] [zookeeper host string]"
 
-start :: (forall a. StoreOp a -> Snap a) -> Int -> IO ()
+start :: (forall a. SD.StoreOp a -> Snap a) -> Int -> IO ()
 start runStoreOp port = do
   let config =
         applyAll [
-          setPort port,
-          setAccessLog (writeTo stdout),
-          setErrorLog (writeTo stderr)
-        ] defaultConfig
-  simpleHttpServe (config :: Config Snap ()) (site runStoreOp)
+          Server.setPort port,
+          Server.setAccessLog (writeTo stdout),
+          Server.setErrorLog (writeTo stderr)
+        ] Server.defaultConfig
+  Server.simpleHttpServe (config :: Server.Config Snap ()) (site runStoreOp)

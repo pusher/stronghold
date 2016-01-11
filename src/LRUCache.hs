@@ -4,16 +4,16 @@ module LRUCache (
 ) where
 
 {-
-  This module defines a mutable LRU cache. It's built from a mutable (STM) 
-  doubly-linked list containing key value pairs (ordered by last usage) and a 
+  This module defines a mutable LRU cache. It's built from a mutable (STM)
+  doubly-linked list containing key value pairs (ordered by last usage) and a
   TVar containing a HashMap mapping keys to list nodes.
 
-  It will work with concurrency, but not parallelism. It prevents the same 
-  operation being done at the same time in different threads, but every lookup 
-  modifies the head of list. This could be fixed by partitioning the key space, 
+  It will work with concurrency, but not parallelism. It prevents the same
+  operation being done at the same time in different threads, but every lookup
+  modifies the head of list. This could be fixed by partitioning the key space,
   using a separate cache for each segment, but it hasn't been implemented yet.
 
-  In the case that an exception is raised, the exception will be rethrown in 
+  In the case that an exception is raised, the exception will be rethrown in
   all threads waiting for that value, but it will not be cached.
 -}
 

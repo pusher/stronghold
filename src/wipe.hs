@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
 module Main where
 
-import Control.Exception
+import Control.Exception (try)
 import Crypto.Hash.SHA1 (hash)
 import Data.ByteString.Char8
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
