@@ -2,6 +2,7 @@
 module Main where
 
 import Control.Exception (try)
+import Control.Monad (void)
 import Crypto.Hash.SHA1 (hash)
 import Data.ByteString.Char8
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
@@ -16,7 +17,7 @@ nilHash = Base16.encode (hash nilNode)
 
 attemptZK :: IO a -> IO ()
 attemptZK act =
-  tryZK act >> return ()
+  void $ tryZK act
  where
   tryZK :: IO a -> IO (Either Zoo.ZooError a)
   tryZK = try
@@ -31,7 +32,15 @@ main = do
     mapM_ (\child -> Zoo.delete zk ("/ref/" ++ child) (-1)) children
   attemptZK $ Zoo.delete zk "/ref" (-1)
 
-  attemptZK $ Zoo.create zk "/ref" Nothing Zoo.OpenAclUnsafe (Zoo.CreateMode False False)
-  attemptZK $ Zoo.create zk "/head" Nothing Zoo.OpenAclUnsafe (Zoo.CreateMode False False)
-  attemptZK $ Zoo.create zk ("/ref/" ++ unpack nilHash) (Just nilNode) Zoo.OpenAclUnsafe (Zoo.CreateMode False False)
+  attemptZK $
+    Zoo.create zk "/ref" Nothing Zoo.OpenAclUnsafe (Zoo.CreateMode False False)
+  attemptZK $
+    Zoo.create zk "/head" Nothing Zoo.OpenAclUnsafe (Zoo.CreateMode False False)
+  attemptZK $
+    Zoo.create
+      zk
+      ("/ref/" ++ unpack nilHash)
+      (Just nilNode)
+      Zoo.OpenAclUnsafe
+      (Zoo.CreateMode False False)
   attemptZK $ Zoo.set zk "/head" (Just nilHash) (-1)

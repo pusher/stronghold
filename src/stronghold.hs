@@ -23,8 +23,7 @@ import Snap.Core (Snap, Method(GET, POST))
 import StoredData (JSON)
 import System.Environment (getArgs)
 import System.IO (Handle, stdout, stderr)
-import Trees ()
-import Util (deepMerge, integerFromUTC, utcFromInteger, Path, pathToText, listToPath)
+import Util (Path)
 
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Base16 as Base16
@@ -36,6 +35,7 @@ import qualified Snap.Http.Server as Server
 import qualified StoredData as SD
 import qualified SQLiteInterface as SQL
 import qualified Trees as T
+import qualified Util
 import qualified ZkInterface as Zk
 
 data HTTPStatus =
@@ -58,7 +58,8 @@ errorMessage UnprocessableEntity = "Unprocessable Entity"
 
 sendError :: HTTPStatus -> Text -> Snap a
 sendError status body = do
-  Snap.modifyResponse $ Snap.setResponseStatus (errorCode status) (errorMessage status)
+  Snap.modifyResponse $
+    Snap.setResponseStatus (errorCode status) (errorMessage status)
   Snap.writeText body
   Snap.writeText "\n"
   Snap.getResponse >>= Snap.finishWith
@@ -107,10 +108,10 @@ site runStoreOp =
   recordToJSON ref (SD.MetaInfo ts comment author) paths =
     Aeson.object [
       ("revision", Aeson.toJSON $ decodeUtf8 (SD.unref ref)),
-      ("timestamp", Aeson.toJSON $ integerFromUTC ts),
+      ("timestamp", Aeson.toJSON $ Util.integerFromUTC ts),
       ("comment", Aeson.toJSON comment),
       ("author", Aeson.toJSON author),
-      ("paths", Aeson.toJSON (map pathToText paths))
+      ("paths", Aeson.toJSON (map Util.pathToText paths))
      ]
 
   maybeReadBS :: Read a => ByteString -> Maybe a
@@ -119,11 +120,13 @@ site runStoreOp =
   summarizeRevisions :: [SD.Ref SD.HistoryTag] -> Snap JSON
   summarizeRevisions revisions = do
     infos <- runStoreOp $ mapM T.loadInfo revisions
-    let err = sendError UnprocessableEntity "can't process the sentinel history node"
+    let err = sendError UnprocessableEntity
+                "can't process the sentinel history node"
     infos' <- maybe err return (sequence infos)
     let result = zip revisions infos'
     let paths = map (\(path, _, _) -> path)
-    let result' = map (\(rev, (meta, _, changes)) -> recordToJSON rev meta (paths changes)) result
+    let result' = map (\(rev, (meta, _, changes)) ->
+          recordToJSON rev meta (paths changes)) result
     return $ Aeson.toJSON result'
 
   -- query the set of versions
@@ -140,11 +143,11 @@ site runStoreOp =
     first' <- mapM createRef' first
     last' <- mapM createRef' last
     limit' <- mapM createRef' limit
-    let at' = (join . fmap (fmap utcFromInteger . maybeReadBS)) at
+    let at' = (join . fmap (fmap Util.utcFromInteger . maybeReadBS)) at
     let size' = (join . fmap maybeReadBS) size
 
     case (at', last', size', first', limit') of
-      (Just ts, Nothing, Nothing, Nothing, Nothing) -> do
+      (Just ts, Nothing, Nothing, Nothing, Nothing) ->
         fetchAt ts
       (Nothing, Just last'', _, Nothing, Nothing) -> do
         revisions <- runStoreOp $ T.revisionsBefore size' last''
@@ -155,7 +158,8 @@ site runStoreOp =
           Snap.writeLBS $ Aeson.encode ([] :: [JSON])
          else do
           revisions <- runStoreOp $ T.revisionsBetween first'' limit''
-          let err = sendError UnprocessableEntity "first is not in limit's history"
+          let err = sendError UnprocessableEntity
+                "first is not in limit's history"
           revisions' <- maybe err return revisions
           let revisions'' = take size'' revisions'
           result <- summarizeRevisions revisions''
@@ -171,7 +175,7 @@ site runStoreOp =
         SD.Cons (_, hier) _ -> do
           z <- T.makeHierarchyZipper hier
           T.subPaths z
-    Snap.writeLBS (Aeson.encode (map pathToText paths))
+    Snap.writeLBS (Aeson.encode (map Util.pathToText paths))
 
   getPath :: Snap Path
   getPath = do
@@ -181,7 +185,7 @@ site runStoreOp =
      else if Text.last path == '/' then
       fail "couldn't construct path"
      else
-      (return . listToPath . Text.splitOn "/") path
+      (return . Util.listToPath . Text.splitOn "/") path
 
   next :: SD.Ref SD.HistoryTag -> Snap ()
   next hist = Snap.method GET $ do
@@ -189,21 +193,24 @@ site runStoreOp =
     path <- getPath
     result <- runStoreOp $ T.nextMaterializedView hist path
     (json, revision) <- maybe (liftIO $ fail "") return result
-    let object = [("data", json), ("revision", Aeson.String (decodeUtf8 (SD.unref revision)))]
+    let object = [("data", json),
+                  ("revision", Aeson.String (decodeUtf8 (SD.unref revision)))]
     Snap.writeLBS $ Aeson.encode $ Aeson.object object
 
   formatChanges :: [(Path, JSON, JSON)] -> JSON
   formatChanges =
     Aeson.toJSON . map (\(path, old, new) ->
       Aeson.object [
-        ("path", Aeson.toJSON (pathToText path)),
+        ("path", Aeson.toJSON (Util.pathToText path)),
         ("old", old),
         ("new", new)
       ])
 
-  formatInfo :: Maybe (SD.MetaInfo, SD.Ref SD.HistoryTag, [(Path, JSON, JSON)]) -> JSON
+  formatInfo
+    :: Maybe (SD.MetaInfo, SD.Ref SD.HistoryTag, [(Path, JSON, JSON)])
+    -> JSON
   formatInfo (Just (meta, previous, changes)) =
-    deepMerge
+    Util.deepMerge
       (Aeson.toJSON meta)
       (Aeson.object [
         ("previous", Aeson.toJSON $ decodeUtf8 (SD.unref previous) ),
@@ -222,7 +229,7 @@ site runStoreOp =
     json <- runStoreOp $ do
       hier <- T.lastHierarchy hist
       snd <$> T.materializedView path hier
-    Snap.writeLBS $ Aeson.encode $ json
+    Snap.writeLBS $ Aeson.encode json
 
   peculiar :: T.History -> Snap ()
   peculiar hist = Snap.method GET $ do
@@ -250,7 +257,9 @@ site runStoreOp =
     dat <- jsonLookup "data" obj
     -- ensure that data is an object
     resultToMaybe $ Aeson.fromJSON dat :: Maybe Aeson.Object
-    (,,) <$> jsonLookup "author" obj <*> jsonLookup "comment" obj <*> return dat
+    (,,) <$>
+      jsonLookup "author" obj <*>
+      jsonLookup "comment" obj <*> return dat
 
   update :: SD.Ref SD.HistoryTag -> Snap ()
   update ref = Snap.method POST $ do
@@ -262,15 +271,17 @@ site runStoreOp =
       Just body' ->
         case retrieveUpdateInfo body' of
           Nothing ->
-            sendError UnprocessableEntity "The given JSON should contain: author, comment, data"
+            sendError UnprocessableEntity
+              "The given JSON should contain: author, comment, data"
           Just (author, comment, dat) -> do
-            ts <- liftIO $ getCurrentTime
+            ts <- liftIO getCurrentTime
             let meta = SD.MetaInfo ts comment author
-            result <- (runStoreOp $ T.updateHierarchy meta path dat ref)
+            result <- runStoreOp $ T.updateHierarchy meta path dat ref
             case result of
               Just head -> Snap.writeBS (SD.unref head)
               Nothing ->
-                sendError Conflict "The update was aborted because an ancestor or descendent has changed"
+                sendError Conflict
+                  "The update was aborted because an ancestor or descendent has changed"
 
 writeTo :: Handle -> Server.ConfigLog
 writeTo handle = Server.ConfigIoLog (BC.hPutStrLn handle)

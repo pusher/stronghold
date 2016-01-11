@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, DataKinds, OverloadedStrings, StandaloneDeriving, FlexibleInstances #-}
+{-# LANGUAGE GADTs, DataKinds, OverloadedStrings, FlexibleInstances #-}
 module Trees where
 
 {-
@@ -7,6 +7,7 @@ module Trees where
 -}
 
 import Control.Applicative ((<$>))
+import Control.Arrow (first)
 import Control.Monad (foldM)
 import Data.HashMap.Strict (HashMap, unionWith)
 import Data.Hashable (Hashable)
@@ -39,7 +40,8 @@ type History = Mu (Ref SD.HistoryTag) (SD.ListNode (SD.MetaInfo, Hierarchy))
 instance Show (Mu (Ref SD.HierarchyTag) (SD.TreeNode JSON' Text)) where
   show (Mu t) = show t
 
-instance Show (Mu (Ref SD.HistoryTag) (SD.ListNode (SD.MetaInfo, Hierarchy))) where
+instance Show (Mu (Ref SD.HistoryTag) (SD.ListNode (SD.MetaInfo, Hierarchy)))
+    where
   show (Mu t) = show t
 
 makeHistoryTree :: Ref SD.HistoryTag -> History
@@ -56,7 +58,8 @@ storeHierarchy :: Hierarchy -> StoreOp (Ref SD.HierarchyTag)
 storeHierarchy (Mu (Left x)) = return x
 storeHierarchy (Mu (Right (SD.TreeNode l json))) = do
   json' <- storeJSON json
-  l' <- HashMap.fromList <$> mapM (\(k, v) -> (,) k <$> storeHierarchy v) (HashMap.toList l)
+  l' <- HashMap.fromList <$>
+    mapM (\(k, v) -> (,) k <$> storeHierarchy v) (HashMap.toList l)
   SD.store $ SD.HierarchyNode (SD.TreeNode l' json')
 
 storeHistory :: History -> StoreOp (Ref SD.HistoryTag)
@@ -83,14 +86,17 @@ derefJSON (Left r) = do
 refHistory :: SD.ListNode (SD.MetaInfo, Hierarchy) History -> History
 refHistory = Mu . Right
 
-derefHistory :: History -> StoreOp (SD.ListNode (SD.MetaInfo, Hierarchy) History)
+derefHistory
+  :: History
+  -> StoreOp (SD.ListNode (SD.MetaInfo, Hierarchy) History)
 derefHistory (Mu (Right x)) = return x
 derefHistory (Mu (Left r)) = do
   SD.HistoryNode l <- SD.load r
   return $
     case l of
       SD.Nil -> SD.Nil
-      SD.Cons (meta, hierarchy) history -> SD.Cons (meta, Mu (Left hierarchy)) (Mu (Left history))
+      SD.Cons (meta, hierarchy) history ->
+        SD.Cons (meta, Mu (Left hierarchy)) (Mu (Left history))
 
 refHierarchy :: SD.TreeNode JSON' Text Hierarchy -> Hierarchy
 refHierarchy = Mu . Right
@@ -99,31 +105,38 @@ derefHierarchy :: Hierarchy -> StoreOp (SD.TreeNode JSON' Text Hierarchy)
 derefHierarchy (Mu (Right x)) = return x
 derefHierarchy (Mu (Left r)) = do
   SD.HierarchyNode (SD.TreeNode l json) <- SD.load r
-  return $ SD.TreeNode (HashMap.map (\v -> Mu (Left v)) l) (Left json)
+  return $ SD.TreeNode (HashMap.map (Mu . Left) l) (Left json)
 
-data HierarchyCtx = HierarchyCtx [(Text, HashMap Text Hierarchy, JSON')] deriving Show
-data HierarchyZipper = HierarchyZipper HierarchyCtx (SD.TreeNode JSON' Text Hierarchy) deriving Show
+data HierarchyCtx = HierarchyCtx [(Text, HashMap Text Hierarchy, JSON')]
+  deriving Show
+data HierarchyZipper =
+  HierarchyZipper HierarchyCtx (SD.TreeNode JSON' Text Hierarchy)
+  deriving Show
 
 makeHierarchyZipper :: Hierarchy -> StoreOp HierarchyZipper
-makeHierarchyZipper hier = HierarchyZipper (HierarchyCtx []) <$> derefHierarchy hier
+makeHierarchyZipper hier =
+  HierarchyZipper (HierarchyCtx []) <$> derefHierarchy hier
 
 down :: Text -> HierarchyZipper -> StoreOp HierarchyZipper
 down key (HierarchyZipper (HierarchyCtx hierCtx) (SD.TreeNode children json)) =
   let hierCtx' = HierarchyCtx ((key, HashMap.delete key children, json):hierCtx)
       def = return $ SD.TreeNode HashMap.empty (refJSON (Aeson.object [])) in
-        HierarchyZipper hierCtx' <$> maybe def derefHierarchy (HashMap.lookup key children)
+        HierarchyZipper hierCtx' <$>
+          maybe def derefHierarchy (HashMap.lookup key children)
 
 followPath :: Path -> HierarchyZipper -> StoreOp HierarchyZipper
 followPath = flip (foldM (flip down)) . pathToList
 
 up :: HierarchyZipper -> HierarchyZipper
 up z@(HierarchyZipper (HierarchyCtx []) _) = z
-up (HierarchyZipper (HierarchyCtx ((key, children', json'):xs)) hier@(SD.TreeNode children json)) =
+up (HierarchyZipper
+      (HierarchyCtx ((key, children', json'):xs))
+      hier@(SD.TreeNode children json)) =
   HierarchyZipper (HierarchyCtx xs) $
-    if HashMap.null children && emptyObject' json then do
-      (SD.TreeNode children' json')
+    if HashMap.null children && emptyObject' json then
+      SD.TreeNode children' json'
     else
-      (SD.TreeNode (HashMap.insert key (refHierarchy hier) children') json')
+      SD.TreeNode (HashMap.insert key (refHierarchy hier) children') json'
 
 isTop :: HierarchyZipper -> Bool
 isTop (HierarchyZipper (HierarchyCtx x) _) = null x
@@ -177,20 +190,30 @@ revisionsBefore :: Maybe Int -> Ref SD.HistoryTag -> StoreOp [Ref SD.HistoryTag]
 revisionsBefore limit ref =
   fmap reverse (revisionsBefore' limit ref)
  where
-  revisionsBefore' :: Maybe Int -> Ref SD.HistoryTag -> StoreOp [Ref SD.HistoryTag]
+  revisionsBefore'
+    :: Maybe Int
+    -> Ref SD.HistoryTag
+    -> StoreOp [Ref SD.HistoryTag]
   revisionsBefore' (Just 0) _ = return []
   revisionsBefore' limit ref = do
     ref' <- loadHistory ref
     case ref' of
       Nothing -> return []
-      Just (_, _, next) -> (ref :) <$> revisionsBefore' (fmap (flip (-) 1) limit) next
+      Just (_, _, next) -> (ref :) <$>
+        revisionsBefore' (fmap (flip (-) 1) limit) next
 
 -- from < x <= to
-revisionsBetween :: Ref SD.HistoryTag -> Ref SD.HistoryTag -> StoreOp (Maybe [Ref SD.HistoryTag])
-revisionsBetween from to = do
+revisionsBetween
+  :: Ref SD.HistoryTag
+  -> Ref SD.HistoryTag
+  -> StoreOp (Maybe [Ref SD.HistoryTag])
+revisionsBetween from to =
   fmap (fmap reverse) (revisionsBetween' from to)
  where
-  revisionsBetween' :: Ref SD.HistoryTag -> Ref SD.HistoryTag -> StoreOp (Maybe [Ref SD.HistoryTag])
+  revisionsBetween'
+    :: Ref SD.HistoryTag
+    -> Ref SD.HistoryTag
+    -> StoreOp (Maybe [Ref SD.HistoryTag])
   revisionsBetween' from to = do
     hist <- derefHistory (makeHistoryTree to)
     case hist of
@@ -215,7 +238,10 @@ materializedView path hier = do
     return (z'', json:l)) (z', [json]) (pathToList path)
   return (solidifyHierarchyZipper z'', foldl1 deepMerge $ reverse jsons)
 
-nextMaterializedView :: Ref SD.HistoryTag -> Path -> StoreOp (Maybe (JSON, Ref SD.HistoryTag))
+nextMaterializedView
+  :: Ref SD.HistoryTag
+  -> Path
+  -> StoreOp (Maybe (JSON, Ref SD.HistoryTag))
 nextMaterializedView ref path = do
   head <- SD.getHeadBlockIfEq ref
   revisions <- revisionsBetween ref head
@@ -247,14 +273,18 @@ nextMaterializedView ref path = do
         Nothing -> nextMaterializedView head path
         Just _ -> return result
 
-loadHistory :: Ref SD.HistoryTag -> StoreOp (Maybe (SD.MetaInfo, Ref SD.HierarchyTag, Ref SD.HistoryTag))
+loadHistory
+  :: Ref SD.HistoryTag
+  -> StoreOp (Maybe (SD.MetaInfo, Ref SD.HierarchyTag, Ref SD.HistoryTag))
 loadHistory hist = do
   SD.HistoryNode hist' <- SD.load hist
   case hist' of
     SD.Nil -> return Nothing
     SD.Cons (meta, hier) hist'' -> return (Just (meta, hier, hist''))
 
-loadHierarchy :: Ref SD.HierarchyTag -> StoreOp (JSON, HashMap Text (Ref SD.HierarchyTag))
+loadHierarchy
+  :: Ref SD.HierarchyTag
+  -> StoreOp (JSON, HashMap Text (Ref SD.HierarchyTag))
 loadHierarchy ref = do
   SD.HierarchyNode (SD.TreeNode table jsonref) <- SD.load ref
   SD.JSONData json <- SD.load jsonref
@@ -278,7 +308,11 @@ findActive ts = do
 
 data AtLeastOneOf a b = OnlyLeft a | OnlyRight b | Both a b deriving Show
 
-unionAB :: (Hashable k, Ord k) => HashMap k a -> HashMap k b -> HashMap k (AtLeastOneOf a b)
+unionAB
+  :: (Hashable k, Ord k)
+  => HashMap k a
+  -> HashMap k b
+  -> HashMap k (AtLeastOneOf a b)
 unionAB a b =
   HashMap.unionWith
     (\(OnlyLeft x) (OnlyRight y) -> Both x y)
@@ -291,10 +325,13 @@ collapse ref = do
   let changes = if json == Aeson.object [] then [] else [(mempty, json)]
   l <- mapM (\(k, v) -> do
     dat <- collapse v
-    return (map (\(p, json) -> (listToPath [k] `mappend` p, json)) dat)) (HashMap.toList table)
+    return (map (first (mappend (listToPath [k]))) dat)) (HashMap.toList table)
   return (changes ++ concat l)
 
-diff :: Ref SD.HierarchyTag -> Ref SD.HierarchyTag -> StoreOp [(Path, JSON, JSON)]
+diff
+  :: Ref SD.HierarchyTag
+  -> Ref SD.HierarchyTag
+  -> StoreOp [(Path, JSON, JSON)]
 diff x y =
   if x == y then
     return []
@@ -307,16 +344,21 @@ diff x y =
       case x of
         OnlyLeft x -> do
           l <- collapse x
-          return (map (\(path, json) -> (listToPath [k] `mappend` path, json, Aeson.object [])) l)
+          return $ map (\(path, json) ->
+            (listToPath [k] `mappend` path, json, Aeson.object [])) l
         OnlyRight x -> do
           l <- collapse x
-          return (map (\(path, json) -> (listToPath [k] `mappend` path, Aeson.object [], json)) l)
+          return $ map (\(path, json) ->
+            (listToPath [k] `mappend` path, Aeson.object [], json)) l
         Both x y -> do
           changes <- diff x y
-          return (map (\(a, b, c) -> (listToPath [k] `mappend` a, b, c)) changes)) l
+          return (map (\(a, b, c) ->
+            (listToPath [k] `mappend` a, b, c)) changes)) l
     return (changes ++ concat l')
 
-loadInfo :: Ref SD.HistoryTag -> StoreOp (Maybe (SD.MetaInfo, Ref SD.HistoryTag, [(Path, JSON, JSON)]))
+loadInfo
+  :: Ref SD.HistoryTag
+  -> StoreOp (Maybe (SD.MetaInfo, Ref SD.HistoryTag, [(Path, JSON, JSON)]))
 loadInfo ref = do
   x <- loadHistory ref
   case x of
@@ -331,7 +373,12 @@ loadInfo ref = do
           d <- diff hier' hier
           return (Just (meta, prev, d))
 
-updateHierarchy :: SD.MetaInfo -> Path -> JSON -> Ref SD.HistoryTag -> StoreOp (Maybe (Ref SD.HistoryTag))
+updateHierarchy
+  :: SD.MetaInfo
+  -> Path
+  -> JSON
+  -> Ref SD.HistoryTag
+  -> StoreOp (Maybe (Ref SD.HistoryTag))
 updateHierarchy meta path json ref = do
   head <- SD.getHead
   refTree <- getHierarchy ref
@@ -351,7 +398,11 @@ updateHierarchy meta path json ref = do
   getHierarchy :: Ref SD.HistoryTag -> StoreOp (Maybe (Ref SD.HierarchyTag))
   getHierarchy = fmap (fmap (\(_, hier, _) -> hier)) . loadHistory
 
-  check :: Maybe (Ref SD.HierarchyTag) -> Maybe (Ref SD.HierarchyTag) -> Path -> StoreOp Bool
+  check
+    :: Maybe (Ref SD.HierarchyTag)
+    -> Maybe (Ref SD.HierarchyTag)
+    -> Path
+    -> StoreOp Bool
   check a b path =
     if a == b then
       return True
@@ -373,7 +424,11 @@ updateHierarchy meta path json ref = do
            else
             return False
 
-  applyUpdate :: Path -> JSON -> Maybe (Ref SD.HierarchyTag) -> StoreOp Hierarchy
+  applyUpdate
+    :: Path
+    -> JSON
+    -> Maybe (Ref SD.HierarchyTag)
+    -> StoreOp Hierarchy
   applyUpdate path json hier = do
     let hier' =
           case hier of
@@ -384,5 +439,9 @@ updateHierarchy meta path json ref = do
     let z'' = setJSON' (refJSON json) z'
     return $ solidifyHierarchyZipper z''
 
-  createHistory :: SD.MetaInfo -> Hierarchy -> History -> StoreOp (Ref SD.HistoryTag)
+  createHistory
+    :: SD.MetaInfo
+    -> Hierarchy
+    -> History
+    -> StoreOp (Ref SD.HistoryTag)
   createHistory meta hier hist = storeHistory (addHistory meta hier hist)

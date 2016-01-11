@@ -19,13 +19,15 @@ module LRUCache (
 
 import Control.Applicative ((<$>), (<*>), (<|>))
 import Control.Concurrent.Async (Async, wait, async)
-import Control.Concurrent.STM (STM, TVar, newTVar, readTVar, writeTVar, atomically, retry)
+import Control.Concurrent.STM (STM, TVar, atomically, retry)
 import Control.Exception (try, SomeException, throw)
 import Control.Monad (mapM, forM_, when)
 import Data.HashMap.Strict (HashMap)
 import Data.Hashable (Hashable)
+import Data.Maybe (isNothing)
 import Prelude hiding (readList, last)
 
+import qualified Control.Concurrent.STM as STM
 import qualified Data.HashMap.Strict as HashMap
 
 newtype MList a =
@@ -37,48 +39,48 @@ newtype MNode a =
   deriving Eq
 
 newList :: STM (MList a)
-newList = MList <$> newTVar (Nothing, 0)
+newList = MList <$> STM.newTVar (Nothing, 0)
 
 newNode :: a -> STM (MNode a)
-newNode x = MNode <$> newTVar (x, Nothing, Nothing, Nothing)
+newNode x = MNode <$> STM.newTVar (x, Nothing, Nothing, Nothing)
 
 prev :: Maybe (MNode a) -> STM (Maybe (MNode a))
 prev Nothing = return Nothing
 prev (Just (MNode node)) = do
-  (_, p, _, _) <- readTVar node
+  (_, p, _, _) <- STM.readTVar node
   return p
 
 next :: Maybe (MNode a) -> STM (Maybe (MNode a))
 next Nothing = return Nothing
 next (Just (MNode node)) = do
-  (_, _, n, _) <- readTVar node
+  (_, _, n, _) <- STM.readTVar node
   return n
 
 getItem :: MNode a -> STM a
 getItem (MNode node) = do
-  (x, _, _, _) <- readTVar node
+  (x, _, _, _) <- STM.readTVar node
   return x
 
 setNext :: Maybe (MNode a) -> Maybe (MNode a) -> STM ()
 setNext Nothing _ = return ()
 setNext (Just (MNode node)) n = do
-  (a, p, _, l) <- readTVar node
-  writeTVar node (a, p, n, l)
+  (a, p, _, l) <- STM.readTVar node
+  STM.writeTVar node (a, p, n, l)
 
 setPrev :: Maybe (MNode a) -> Maybe (MNode a) -> STM ()
 setPrev Nothing _ = return ()
 setPrev (Just (MNode node)) p = do
-  (a, _, n, l) <- readTVar node
-  writeTVar node (a, p, n, l)
+  (a, _, n, l) <- STM.readTVar node
+  STM.writeTVar node (a, p, n, l)
 
 areNeighbours :: Maybe (MNode a) -> Maybe (MNode a) -> STM Bool
 areNeighbours Nothing Nothing = return True
 areNeighbours Nothing x = do
   x' <- prev x
-  return (x' == Nothing)
+  return $ isNothing x'
 areNeighbours x Nothing = do
   x' <- next x
-  return (x' == Nothing)
+  return $ isNothing x'
 areNeighbours p n = do
   n' <- next p
   p' <- next n
@@ -87,45 +89,45 @@ areNeighbours p n = do
 link :: MNode a -> Maybe (MNode a) -> Maybe (MNode a) -> MList a -> STM ()
 link node@(MNode node') p n list@(MList list') = do
   unlink node
-  (x, _, _, _) <- readTVar node'
+  (x, _, _, _) <- STM.readTVar node'
   b <- areNeighbours p n
   if b then do
     setNext p (Just node)
     setPrev n (Just node)
-    (y, !c) <- readTVar list'
+    (y, !c) <- STM.readTVar list'
     let y' = case y of
               Nothing -> (node, node)
               Just (first, last) ->
                 let first' = if Just first == n then node else first
                     last' = if Just last == p then node else last in
                       (first', last')
-    writeTVar list' (Just y', c+1)
-    writeTVar node' (x, p, n, Just list)
+    STM.writeTVar list' (Just y', c+1)
+    STM.writeTVar node' (x, p, n, Just list)
    else
     fail "can only link neighbouring nodes"
 
 unlink :: MNode a -> STM ()
 unlink node@(MNode node') = do
-  (x, p, n, list) <- readTVar node'
+  (x, p, n, list) <- STM.readTVar node'
   setNext p n
   setPrev n p
   case list of
     Nothing -> return ()
     Just (MList list') -> do
-      (y, !c) <- readTVar list'
+      (y, !c) <- STM.readTVar list'
       case y of
         Nothing -> return ()
         Just (f, l) ->
           let f' = if f == node then n else Just f
               l' = if l == node then p else Just l in
-                writeTVar list' ((,) <$> f' <*> l', c-1)
-  writeTVar node' (x, Nothing, Nothing, Nothing)
+                STM.writeTVar list' ((,) <$> f' <*> l', c-1)
+  STM.writeTVar node' (x, Nothing, Nothing, Nothing)
 
 first :: MList a -> STM (Maybe (MNode a))
-first (MList l) = (fmap fst . fst) <$> readTVar l
+first (MList l) = (fmap fst . fst) <$> STM.readTVar l
 
 last :: MList a -> STM (Maybe (MNode a))
-last (MList l) = (fmap snd . fst) <$> readTVar l
+last (MList l) = (fmap snd . fst) <$> STM.readTVar l
 
 pushFront :: MNode a -> MList a -> STM ()
 pushFront node l = do
@@ -146,7 +148,7 @@ popBack x = do
   return l
 
 size :: MList a -> STM Int
-size (MList l) = snd <$> readTVar l
+size (MList l) = snd <$> STM.readTVar l
 
 readList :: MList a -> Int -> STM [MNode a]
 readList l n = do
@@ -156,7 +158,7 @@ readList l n = do
 readListValues :: MList a -> Int -> STM [a]
 readListValues l n = readList l n >>= mapM getItem
 
-readOnwards :: Maybe (MNode a) -> Int -> STM [(MNode a)]
+readOnwards :: Maybe (MNode a) -> Int -> STM [MNode a]
 readOnwards node n =
   readOnwards' node n []
  where
@@ -170,20 +172,20 @@ readOnwards node n =
 newtype TAsync a = TAsync (TVar (Maybe (Either (IO (Async a)) (Async a))))
 
 newTAsync :: IO a -> STM (TAsync a)
-newTAsync = fmap TAsync . newTVar . Just . Left . async
+newTAsync = fmap TAsync . STM.newTVar . Just . Left . async
 
 startTAsync :: TAsync a -> IO (Async a)
 startTAsync (TAsync t) = do
   t' <- atomically $ do
-    t' <- readTVar t >>= maybe retry return
+    t' <- STM.readTVar t >>= maybe retry return
     case t' of
-      Left _ -> writeTVar t Nothing
+      Left _ -> STM.writeTVar t Nothing
       Right _ -> return ()
     return t'
   case t' of
     Left action -> do
       result <- action
-      atomically $ writeTVar t (Just (Right result))
+      atomically $ STM.writeTVar t (Just (Right result))
       return result
     Right result -> return result
 
@@ -192,21 +194,28 @@ waitTAsync p = do
   x <- startTAsync p
   wait x
 
-data LRU k v = LRU !(k -> IO v) !Int !(MList (k, TAsync v)) !(TVar (HashMap k (MNode (k, TAsync v))))
+data LRU k v =
+  LRU
+    !(k -> IO v)
+    !Int
+    !(MList (k, TAsync v))
+    !(TVar (HashMap k (MNode (k, TAsync v))))
 
 newLRU :: (Hashable k, Eq k) => (k -> IO v) -> Int -> IO (k -> IO v)
-newLRU action n = readLRU <$> (atomically (LRU action n <$> newList <*> newTVar HashMap.empty))
+newLRU action n =
+  readLRU <$>
+    atomically (LRU action n <$> newList <*> STM.newTVar HashMap.empty)
 
 readLRU :: (Hashable k, Eq k) => LRU k v -> k -> IO v
 readLRU lru@(LRU action _ list m) key = do
   (b, t) <- atomically $ do
-    m' <- readTVar m
+    m' <- STM.readTVar m
     case HashMap.lookup key m' of
       Nothing -> do
         t <- newTAsync (action key)
         node <- newNode (key, t)
         pushFront node list
-        writeTVar m (HashMap.insert key node m')
+        STM.writeTVar m (HashMap.insert key node m')
         popExcess lru
         return (True, t)
       Just node -> do
@@ -224,8 +233,8 @@ readLRU lru@(LRU action _ list m) key = do
  where
   modifyTVar :: TVar a -> (a -> a) -> STM ()
   modifyTVar t f = do
-    x <- readTVar t
-    writeTVar t (f x)
+    x <- STM.readTVar t
+    STM.writeTVar t (f x)
 
   popExcess :: (Hashable k, Eq k) => LRU k v -> STM ()
   popExcess lru@(LRU _ n list map) = do
