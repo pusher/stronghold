@@ -10,7 +10,7 @@ module Util (
 ) where
 
 import Data.HashMap.Strict (unionWith)
-import Data.Monoid (Monoid, mempty, mappend)
+import Data.Monoid (Monoid, mappend, mempty)
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)

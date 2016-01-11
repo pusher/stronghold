@@ -19,7 +19,7 @@ module ZkInterface (
 import Control.Applicative ((<$>), (<*>), empty)
 import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM (STM, TVar, atomically, retry)
-import Control.Exception (tryJust, Exception, try, SomeException)
+import Control.Exception (Exception, try, tryJust, SomeException)
 import Control.Monad (guard, join)
 import Control.Monad.Operational (ProgramViewT (..), view)
 import Control.Monad.Trans (lift)

@@ -12,11 +12,11 @@ import Control.Monad (foldM)
 import Data.HashMap.Strict (HashMap, unionWith)
 import Data.Hashable (Hashable)
 import Data.Maybe (fromJust, isJust)
-import Data.Monoid (mempty, mappend)
+import Data.Monoid (mappend, mempty)
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
-import StoredData (Ref, JSON, StoreOp)
-import Util (deepMerge, Path(Path), pathToList, listToPath)
+import StoredData (JSON, Ref, StoreOp)
+import Util (Path(Path), deepMerge, listToPath, pathToList)
 
 import qualified Data.Aeson as Aeson
 import qualified Data.HashMap.Strict as HashMap

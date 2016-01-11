@@ -8,9 +8,9 @@ import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Maybe (MaybeT (..))
 import Crypto.Hash.SHA1 (hash)
 import Data.ByteString (ByteString)
-import Data.Maybe (listToMaybe, isJust)
+import Data.Maybe (isJust, listToMaybe )
 import Data.Serialize (decode, encode)
-import StoredData (StoreOp, StoreInstr (..), Data (..), ListNode (..))
+import StoredData (Data (..), ListNode (..), StoreInstr (..), StoreOp)
 
 import qualified Control.Concurrent.STM as STM
 import qualified Data.ByteString as B

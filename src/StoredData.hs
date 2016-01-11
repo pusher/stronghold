@@ -12,7 +12,7 @@ module StoredData where
 
 import Control.Applicative ((<$>))
 import Control.Monad (when)
-import Control.Monad.Operational (ProgramViewT (..), singleton, view, Program)
+import Control.Monad.Operational (Program, ProgramViewT (..), singleton, view)
 import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
 import Crypto.Hash.SHA1 (hash)
@@ -23,7 +23,7 @@ import Data.Serialize (Serialize, decode, encode, get, put)
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
 import Data.Time.Calendar (Day (ModifiedJulianDay), toModifiedJulianDay)
-import Data.Time.Clock (UTCTime (UTCTime), DiffTime)
+import Data.Time.Clock (DiffTime, UTCTime (UTCTime))
 import Util (integerFromUTC)
 
 import qualified Data.Aeson as Aeson

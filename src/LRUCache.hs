@@ -18,14 +18,14 @@ module LRUCache (
 -}
 
 import Control.Applicative ((<$>), (<*>), (<|>))
-import Control.Concurrent.Async (Async, wait, async)
+import Control.Concurrent.Async (Async, async, wait)
 import Control.Concurrent.STM (STM, TVar, atomically, retry)
-import Control.Exception (try, SomeException, throw)
-import Control.Monad (mapM, forM_, when)
+import Control.Exception (SomeException, throw, try)
+import Control.Monad (forM_, mapM, when)
 import Data.HashMap.Strict (HashMap)
 import Data.Hashable (Hashable)
 import Data.Maybe (isNothing)
-import Prelude hiding (readList, last)
+import Prelude hiding (last, readList)
 
 import qualified Control.Concurrent.STM as STM
 import qualified Data.HashMap.Strict as HashMap
