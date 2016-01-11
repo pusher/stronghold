@@ -10,7 +10,7 @@ import Crypto.Hash.SHA1 (hash)
 import Data.ByteString (ByteString)
 import Data.Maybe (isJust, listToMaybe )
 import Data.Serialize (decode, encode)
-import StoredData (Data (..), ListNode (..), StoreInstr (..), StoreOp)
+import StoredData (StoreOp)
 
 import qualified Control.Concurrent.STM as STM
 import qualified Data.ByteString as B
@@ -20,7 +20,7 @@ import qualified StoredData as SD
 
 data SQLiteInterface = SQLiteInterface (TVar ByteString) SQL.Connection
 
-nilNode = encode (HistoryNode Nil)
+nilNode = encode (SD.HistoryNode SD.Nil)
 nilHash = (Base16.encode . hash) nilNode
 
 populateEmpty :: SQL.Connection -> IO ByteString
@@ -90,27 +90,27 @@ hasReference :: SQLiteInterface -> ByteString -> MaybeT IO Bool
 hasReference sql ref =
   (fmap isJust . lift . runMaybeT) (loadData sql ref)
 
-runStoreOp' :: SQLiteInterface -> StoreOp a -> MaybeT IO a
+runStoreOp' :: SQLiteInterface -> SD.StoreOp a -> MaybeT IO a
 runStoreOp' sql op =
   case view op of
     Return x -> return x
-    Store d :>>= rest -> do
+    SD.Store d :>>= rest -> do
       let d' = encode d
       ref <- storeData sql d'
       runStoreOp' sql (rest (SD.makeRef ref))
-    Load r :>>= rest -> do
+    SD.Load r :>>= rest -> do
       dat <- loadData sql (SD.unref r)
       either fail (runStoreOp' sql . rest) (decode dat)
-    GetHead :>>= rest -> do
+    SD.GetHead :>>= rest -> do
       head <- getHead sql
       runStoreOp' sql (rest (SD.makeRef head))
-    GetHeadBlockIfEq ref :>>= rest -> do
+    SD.GetHeadBlockIfEq ref :>>= rest -> do
       head <- getHeadBlockIfEq sql (SD.unref ref)
       runStoreOp' sql (rest (SD.makeRef head))
-    UpdateHead old new :>>= rest -> do
+    SD.UpdateHead old new :>>= rest -> do
       b <- updateHead sql (SD.unref old) (SD.unref new)
       runStoreOp' sql (rest b)
-    CreateRef r :>>= rest -> do
+    SD.CreateRef r :>>= rest -> do
       b <- hasReference sql r
       if b then
         runStoreOp' sql (rest (Just (SD.makeRef r)))

@@ -1,21 +1,25 @@
 # Build instructions
 
-## Installing dependencies (on OSX)
-
 NB: There is a development mode which is backed by sqlite. Depending on what
 you're planning, this might well be suitable and much simpler.
 
-Using homebrew:
+## Installing dependencies (on OSX)
 
 ```sh
-# Install zookeeper
 brew install zookeeper
+export CPATH=$(brew --prefix zookeeper)/include/zookeeper:$CPATH
+```
+
+## Installing dependencies on debian / ubuntu
+
+```sh
+sudo apt-get install libzookeeper-mt-dev
+export CPATH=/usr/include/zookeeper:$CPATH
 ```
 
 ## Building Stronghold
 
 ```sh
-export CPATH=$(brew --prefix zookeeper)/include/zookeeper:$CPATH
 stack build
 ```
 

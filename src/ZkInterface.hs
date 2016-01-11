@@ -123,10 +123,11 @@ newZkInterface hostPort handleExceptions = do
   fetchNode :: MVar Zoo.ZHandle -> ByteString -> IO ByteString
   fetchNode zk ref = do
     zk' <- MVar.readMVar zk
-    fst <$> Zoo.get
-              zk'
-              (getZkPath ref)
-              Zoo.NoWatch >>= maybe (fail "no such node") return
+    fst <$>
+      Zoo.get
+        zk'
+        (getZkPath ref)
+        Zoo.NoWatch >>= maybe (fail "no such node") return
 
 getZkPath :: B.ByteString -> String
 getZkPath = ("/ref/" ++) . BC.unpack
