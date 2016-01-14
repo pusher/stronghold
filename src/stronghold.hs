@@ -26,15 +26,14 @@ import System.IO (Handle, stderr, stdout)
 import Util (Path)
 
 import qualified Data.Aeson as Aeson
-import qualified Data.ByteString.Base16 as Base16
 import qualified Data.ByteString.Char8 as BC
-import qualified Data.HashMap.Strict as HashMap
+import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as Text
 import qualified Snap.Core as Snap
 import qualified Snap.Http.Server as Server
 import qualified StoredData as SD
 import qualified SQLiteInterface as SQL
-import qualified Trees as T
+import qualified Trees
 import qualified Util
 import qualified ZkInterface as Zk
 
@@ -84,7 +83,7 @@ site runStoreOp =
   withVersion = do
     Just version <- Snap.getParam "version"
     ref <- createRef' version
-    let hist = T.makeHistoryTree ref
+    let hist = Trees.makeHistoryTree ref
     Snap.route [
       ("tree/paths", paths hist),
       ("tree/materialized", materialized hist),
@@ -101,7 +100,7 @@ site runStoreOp =
 
   fetchAt :: UTCTime -> Snap ()
   fetchAt ts = do
-    ref <- runStoreOp $ T.findActive ts
+    ref <- runStoreOp $ Trees.findActive ts
     Snap.writeBS (SD.unref ref)
 
   recordToJSON :: SD.Ref SD.HistoryTag -> SD.MetaInfo -> [Path] -> SD.JSON
@@ -119,7 +118,7 @@ site runStoreOp =
 
   summarizeRevisions :: [SD.Ref SD.HistoryTag] -> Snap JSON
   summarizeRevisions revisions = do
-    infos <- runStoreOp $ mapM T.loadInfo revisions
+    infos <- runStoreOp $ mapM Trees.loadInfo revisions
     let err = sendError UnprocessableEntity
                 "can't process the sentinel history node"
     infos' <- maybe err return (sequence infos)
@@ -150,14 +149,14 @@ site runStoreOp =
       (Just ts, Nothing, Nothing, Nothing, Nothing) ->
         fetchAt ts
       (Nothing, Just last'', _, Nothing, Nothing) -> do
-        revisions <- runStoreOp $ T.revisionsBefore size' last''
+        revisions <- runStoreOp $ Trees.revisionsBefore size' last''
         result <- summarizeRevisions revisions
         Snap.writeLBS $ Aeson.encode result
       (Nothing, Nothing, Just size'', Just first'', Just limit'') ->
         if first'' == limit'' then
           Snap.writeLBS $ Aeson.encode ([] :: [JSON])
          else do
-          revisions <- runStoreOp $ T.revisionsBetween first'' limit''
+          revisions <- runStoreOp $ Trees.revisionsBetween first'' limit''
           let err = sendError UnprocessableEntity
                 "first is not in limit's history"
           revisions' <- maybe err return revisions
@@ -166,15 +165,15 @@ site runStoreOp =
           Snap.writeLBS $ Aeson.encode result
       (_, _, _, _, _) -> empty
 
-  paths :: T.History -> Snap ()
+  paths :: Trees.History -> Snap ()
   paths hist = Snap.ifTop $ Snap.method GET $ do
     paths <- runStoreOp $ do
-      hist' <- T.derefHistory hist
+      hist' <- Trees.derefHistory hist
       case hist' of
         SD.Nil -> return []
         SD.Cons (_, hier) _ -> do
-          z <- T.makeHierarchyZipper hier
-          T.subPaths z
+          z <- Trees.makeHierarchyZipper hier
+          Trees.subPaths z
     Snap.writeLBS (Aeson.encode (map Util.pathToText paths))
 
   getPath :: Snap Path
@@ -191,7 +190,7 @@ site runStoreOp =
   next hist = Snap.method GET $ do
     Snap.extendTimeout 300
     path <- getPath
-    result <- runStoreOp $ T.nextMaterializedView hist path
+    result <- runStoreOp $ Trees.nextMaterializedView hist path
     (json, revision) <- maybe (liftIO $ fail "") return result
     let object = [("data", json),
                   ("revision", Aeson.String (decodeUtf8 (SD.unref revision)))]
@@ -220,25 +219,25 @@ site runStoreOp =
 
   info :: SD.Ref SD.HistoryTag -> Snap ()
   info ref = Snap.ifTop $ Snap.method GET $ do
-    result <- runStoreOp $ T.loadInfo ref
+    result <- runStoreOp $ Trees.loadInfo ref
     Snap.writeLBS $ Aeson.encode $ formatInfo result
 
-  materialized :: T.History -> Snap ()
+  materialized :: Trees.History -> Snap ()
   materialized hist = Snap.method GET $ do
     path <- getPath
     json <- runStoreOp $ do
-      hier <- T.lastHierarchy hist
-      snd <$> T.materializedView path hier
+      hier <- Trees.lastHierarchy hist
+      snd <$> Trees.materializedView path hier
     Snap.writeLBS $ Aeson.encode json
 
-  peculiar :: T.History -> Snap ()
+  peculiar :: Trees.History -> Snap ()
   peculiar hist = Snap.method GET $ do
     path <- getPath
     json <- runStoreOp $ do
-      hier <- T.lastHierarchy hist
-      z <- T.makeHierarchyZipper hier
-      z' <- T.followPath path z
-      (_, json) <- T.getJSON z'
+      hier <- Trees.lastHierarchy hist
+      z <- Trees.makeHierarchyZipper hier
+      z' <- Trees.followPath path z
+      (_, json) <- Trees.getJSON z'
       return json
     Snap.writeLBS $ Aeson.encode json
 
@@ -248,7 +247,7 @@ site runStoreOp =
 
   jsonLookup :: Aeson.FromJSON a => Text -> Aeson.Object -> Maybe a
   jsonLookup key obj = do
-    field <- HashMap.lookup key obj
+    field <- HM.lookup key obj
     resultToMaybe $ Aeson.fromJSON field
 
   retrieveUpdateInfo :: JSON -> Maybe (Text, Text, JSON)
@@ -276,7 +275,7 @@ site runStoreOp =
           Just (author, comment, dat) -> do
             ts <- liftIO getCurrentTime
             let meta = SD.MetaInfo ts comment author
-            result <- runStoreOp $ T.updateHierarchy meta path dat ref
+            result <- runStoreOp $ Trees.updateHierarchy meta path dat ref
             case result of
               Just head -> Snap.writeBS (SD.unref head)
               Nothing ->
@@ -320,10 +319,10 @@ main = do
 
 start :: (forall a. SD.StoreOp a -> Snap a) -> Int -> IO ()
 start runStoreOp port = do
-  let config =
-        applyAll [
+  let configOpts = [
           Server.setPort port,
           Server.setAccessLog (writeTo stdout),
           Server.setErrorLog (writeTo stderr)
-        ] Server.defaultConfig
+        ]
+      config = applyAll configOpts Server.defaultConfig
   Server.simpleHttpServe (config :: Server.Config Snap ()) (site runStoreOp)
