@@ -1,0 +1,20 @@
+#!/bin/bash -e
+TARGET=$1
+
+if [ -z "$TARGET" ]; then
+  echo TARGET missing
+  exit 1
+fi
+
+# For executable links
+BINS="$TARGET/.packager/bin"
+
+# Build and copy executables
+mkdir -p "$BINS"
+
+CPATH=/usr/include/zookeeper stack install stronghold:stronghold \
+        --local-bin-path "$TARGET"
+
+pushd "$BINS"
+ln -s "../../stronghold" .
+popd
