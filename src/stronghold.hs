@@ -64,13 +64,15 @@ sendError status body = do
   Snap.getResponse >>= Snap.finishWith
 
 site :: (forall a. SD.StoreOp a -> Snap a) -> Snap ()
-site runStoreOp =
+site runStoreOp = do
+  req <- Snap.getRequest
+  liftIO $ print req
   Snap.ifTop (Snap.writeBS "Stronghold says hi") <|>
-  Snap.route [
-    ("head", fetchHead),
-    ("versions", versions),
-    (":version/", withVersion)
-   ]
+    Snap.route [
+      ("head", fetchHead),
+      ("versions", versions),
+      (":version/", withVersion)
+     ]
  where
   createRef' :: ByteString -> Snap (SD.Ref SD.HistoryTag)
   createRef' b = do

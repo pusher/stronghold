@@ -194,22 +194,28 @@ runStoreOp' zk op =
   case view op of
     Return x -> return x
     Store d :>>= rest -> do
+      lift $ putStrLn "Running Store"
       let d' = encode d
       ref <- storeData zk d'
       runStoreOp' zk (rest (makeRef ref))
     Load r :>>= rest -> do
+      lift $ putStrLn "Running Load"
       dat <- loadData zk (unref r)
       either fail (runStoreOp' zk . rest) (decode dat)
     GetHead :>>= rest -> do
+      lift $ putStrLn "Running GetHead"
       head <- getHead zk
       runStoreOp' zk (rest (makeRef head))
     GetHeadBlockIfEq ref :>>= rest -> do
+      lift $ putStrLn "Running GetHeadBlockIfEq"
       head <- getHeadBlockIfEq zk (unref ref)
       runStoreOp' zk (rest (makeRef head))
     UpdateHead old new :>>= rest -> do
+      lift $ putStrLn "Running UpdateHead"
       b <- updateHead zk (unref old) (unref new)
       runStoreOp' zk (rest b)
     CreateRef r :>>= rest -> do
+      lift $ putStrLn "Running CreateRef"
       b <- hasReference zk r
       if b then
         runStoreOp' zk . rest . Just $ makeRef r
@@ -217,4 +223,8 @@ runStoreOp' zk op =
         runStoreOp' zk $ rest Nothing
 
 runStoreOp :: ZkInterface -> StoreOp a -> IO (Maybe a)
-runStoreOp zk op = runMaybeT (runStoreOp' zk op)
+runStoreOp zk op = runMaybeT $ do
+  lift $ putStrLn "Running store operation"
+  result <- runStoreOp' zk op
+  lift $ putStrLn "Completed store operation"
+  return result
