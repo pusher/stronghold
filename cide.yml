@@ -1,0 +1,23 @@
+---
+from: ubuntu:12.04
+as_root:
+  add:
+    /etc/apt/sources.list.d/fpco.key: https://s3.amazonaws.com/download.fpcomplete.com/ubuntu/fpco.key
+  env:
+    DEBIAN_FRONTEND: noninteractive
+    # Workaround for: https://github.com/commercialhaskell/stack/issues/793
+    LC_ALL: C.UTF-8
+  run:
+    - apt-key add /etc/apt/sources.list.d/fpco.key
+    - echo 'deb http://download.fpcomplete.com/ubuntu/precise stable main' > /etc/apt/sources.list.d/fpco.list
+    - >
+      apt-get update -qq && apt-get install -qy
+      libzookeeper-mt-dev
+      stack
+before:
+  add:
+    - stronghold.cabal
+    - script/ci-before
+    - stack.yaml
+  run: script/ci-before
+run: script/ci

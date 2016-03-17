@@ -1,0 +1,4 @@
+#!/bin/sh -ex
+cd "$(dirname "$0")/.."
+
+stack test --fast

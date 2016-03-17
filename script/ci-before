@@ -1,0 +1,8 @@
+#!/bin/sh -e
+cd "$(dirname "$0")/.."
+
+# Build dependencies
+stack setup
+stack build --only-snapshot
+# Install git dependencies
+stack build zookeeper
