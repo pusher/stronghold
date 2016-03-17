@@ -12,7 +12,8 @@ import Control.Monad (foldM, join)
 import Control.Monad.IO.Class (liftIO)
 import Crypto.Hash.SHA1 (hash)
 import Data.ByteString (ByteString)
-import Data.Maybe (fromJust, listToMaybe)
+import Data.CaseInsensitive (CI)
+import Data.Maybe (fromMaybe, fromJust, listToMaybe)
 import Data.Monoid (Endo(Endo), appEndo, mempty, mconcat)
 import Data.Text (Text, unpack)
 import Data.Text.Encoding (decodeUtf8)
@@ -26,6 +27,9 @@ import System.IO (Handle, stderr, stdout)
 import Util (Path)
 
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as LBS
+import qualified Data.ByteString.Base16 as Base16
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as Text
@@ -42,6 +46,10 @@ data HTTPStatus =
   Conflict |
   UnprocessableEntity |
   InternalServerError
+
+-- HTTP Header to return the revision of the changeset
+etagHeader :: CI ByteString
+etagHeader = "ETag"
 
 errorCode :: HTTPStatus -> Int
 errorCode BadRequest = 400
@@ -228,7 +236,15 @@ site runStoreOp =
     json <- runStoreOp $ do
       hier <- Trees.lastHierarchy hist
       snd <$> Trees.materializedView path hier
-    Snap.writeLBS $ Aeson.encode json
+
+    let jsonBS = toStrict $ Aeson.encode json
+    let etag = Base16.encode $ hash jsonBS
+
+    Snap.modifyResponse $ Snap.setHeader etagHeader etag
+    Snap.writeBS jsonBS
+   where
+     -- BS.toStrict is available in more moderns versions of GHC
+     toStrict = BS.concat . LBS.toChunks
 
   peculiar :: Trees.History -> Snap ()
   peculiar hist = Snap.method GET $ do

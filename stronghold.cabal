@@ -11,7 +11,8 @@ executable stronghold
   build-depends:       base >=4.6.0, operational, bytestring, text, aeson,
                        snap-server, snap-core, cereal, zookeeper, cryptohash,
                        base16-bytestring, transformers, unordered-containers,
-                       hashable, time, stm, mtl, async, sqlite-simple
+                       hashable, time, stm, mtl, async, sqlite-simple,
+                       case-insensitive
 
 executable wipe
   default-language:    Haskell2010
