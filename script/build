@@ -6,15 +6,9 @@ if [ -z "$TARGET" ]; then
   exit 1
 fi
 
-# For executable links
-BINS="$TARGET/.packager/bin"
+mkdir -p "$TARGET"
+stack install stronghold:stronghold --local-bin-path "$TARGET"
 
-# Build and copy executables
-mkdir -p "$BINS"
-
-CPATH=/usr/include/zookeeper stack install stronghold:stronghold \
-        --local-bin-path "$TARGET"
-
-pushd "$BINS"
-ln -s "../../stronghold" .
-popd
+# Packager symlinks
+mkdir -p "$TARGET/.packager/bin"
+ln -s ../../stronghold "$TARGET/.packager/bin/stronghold"

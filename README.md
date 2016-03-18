@@ -7,14 +7,13 @@ you're planning, this might well be suitable and much simpler.
 
 ```sh
 brew install zookeeper
-export CPATH=$(brew --prefix zookeeper)/include/zookeeper:$CPATH
+export CPATH=$(brew --prefix zookeeper)/include:$CPATH
 ```
 
 ## Installing dependencies on debian / ubuntu
 
 ```sh
 sudo apt-get install libzookeeper-mt-dev
-export CPATH=/usr/include/zookeeper:$CPATH
 ```
 
 ## Building Stronghold
