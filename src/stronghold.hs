@@ -298,8 +298,19 @@ site runStoreOp =
                 sendError Conflict
                   "The update was aborted because an ancestor or descendent has changed"
 
+
+-- Unfortunately, Snap doesn't allow us to specify a log format, and will
+-- create multi-line logs. The only control we have is here, and to avoid
+-- multi-line errors we strip out the newline characters.
+-- WARNING: From reading Snap's source it looks like there is never more than
+-- one error reported per call to the provided function, but this might change.
+
+-- | Setup Snap's ConfigLog to use the given 'Handle' when logging.
+-- Note that all newline characters will be filtered out.
 writeTo :: Handle -> Server.ConfigLog
-writeTo handle = Server.ConfigIoLog (BC.hPutStrLn handle)
+writeTo handle = Server.ConfigIoLog (BC.hPutStrLn handle . BS.map nlToSpace)
+  where nlToSpace 10 = 32
+        nlToSpace x = x
 
 applyAll :: [a -> a] -> a -> a
 applyAll = appEndo . mconcat . map Endo
