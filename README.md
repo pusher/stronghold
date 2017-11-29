@@ -1,7 +1,8 @@
 # Build instructions
 
-NB: There is a development mode which is backed by sqlite. Depending on what
-you're planning, this might well be suitable and much simpler.
+NB: There is a development mode which is backed by sqlite. This is likely to be
+simpler. You must still install the zookeeper dependency in order for it to
+compile.
 
 ## Installing dependencies (on OSX)
 
