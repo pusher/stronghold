@@ -4,7 +4,8 @@ packages:
 - location:
     git: https://github.com/motus/haskell-zookeeper-client.git
     commit: e724636886e3590624f79e1267bfb4d8eab96f86
-resolver: lts-3.20
+  extra-dep: true
+resolver: lts-9.14
 nix:
   enable: false
   packages:
