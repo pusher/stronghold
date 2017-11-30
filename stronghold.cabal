@@ -13,8 +13,6 @@ executable stronghold
                        base16-bytestring, transformers, unordered-containers,
                        hashable, time, stm, mtl, async, sqlite-simple,
                        case-insensitive
-  other-modules:       LRUCache, SQLiteInterface, StoredData, Trees, Util,
-                       ZkInterface
 
 executable wipe
   default-language:    Haskell2010
