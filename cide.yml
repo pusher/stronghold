@@ -1,5 +1,5 @@
 ---
-from: ubuntu:12.04
+from: ubuntu:14.04
 as_root:
   add:
     /etc/apt/sources.list.d/fpco.key: https://s3.amazonaws.com/download.fpcomplete.com/ubuntu/fpco.key
