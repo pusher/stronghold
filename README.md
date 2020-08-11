@@ -1,3 +1,7 @@
+# DEPRECATED
+`stronghold` is officially deprecated and unmaintained.
+It is recommended that users transition to alternatives.
+
 # Stronghold, an alternative to etcd
 
 Stronghold is a global distributed key-value store for keeping application configuration.
