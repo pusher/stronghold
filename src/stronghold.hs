@@ -347,6 +347,7 @@ main = do
 start :: (forall a. SD.StoreOp a -> Snap a) -> Int -> IO ()
 start runStoreOp port = do
   let configOpts = [
+          Server.setBind "localhost",
           Server.setPort port,
           Server.setAccessLog (writeTo stdout),
           Server.setErrorLog (writeTo stderr)
